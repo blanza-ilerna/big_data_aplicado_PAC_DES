@@ -1,16 +1,6 @@
 version: '3.8'
 
 services:
-  workspace:
-    image: mcr.microsoft.com/devcontainers/python:3.11
-    container_name: bigdata-workspace
-    command: sleep infinity
-    volumes:
-      - .:/workspace
-    working_dir: /workspace
-    networks:
-      - bigdata-network
-
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:v24.2.4
     container_name: bigdata-redpanda
@@ -39,13 +29,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 45s
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          memory: 512M
     networks:
       - bigdata-network
 
@@ -71,13 +54,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 256M
     networks:
       - bigdata-network
 
@@ -95,13 +71,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 256M
     networks:
       - bigdata-network
 
@@ -128,13 +97,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 256M
     networks:
       - bigdata-network
 
@@ -149,7 +111,7 @@ services:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: flink-jobmanager
-        jobmanager.memory.process.size: 1600m
+        jobmanager.memory.process.size: 512m
     volumes:
       - ./config/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
       - flink_jobmanager_data:/opt/flink/data
@@ -159,13 +121,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 2G
-        reservations:
-          memory: 1G
     networks:
       - bigdata-network
 
@@ -182,7 +137,7 @@ services:
         FLINK_PROPERTIES=
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 2
-        taskmanager.memory.process.size: 1728m
+        taskmanager.memory.process.size: 1024m
     volumes:
       - ./config/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
       - flink_taskmanager_data:/opt/flink/data
@@ -191,13 +146,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
-        reservations:
-          memory: 1G
     networks:
       - bigdata-network
 
@@ -220,13 +168,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          memory: 512M
     networks:
       - bigdata-network
 
@@ -242,13 +183,6 @@ services:
     depends_on:
       loki:
         condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: '0.25'
-          memory: 256M
-        reservations:
-          memory: 128M
     networks:
       - bigdata-network
 

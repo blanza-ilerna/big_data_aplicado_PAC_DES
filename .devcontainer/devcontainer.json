@@ -1,8 +1,9 @@
 {
   "name": "ILERNA - Big Data Aplicado",
-  "dockerComposeFile": "../docker-compose.yml",
-  "service": "workspace",
-  "workspaceFolder": "/workspace",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
   "customizations": {
     "vscode": {
       "extensions": [
@@ -14,5 +15,5 @@
     }
   },
   "forwardPorts": [3000, 8083, 8081, 8082, 9090, 5432, 8000, 3100],
-  "postCreateCommand": "pip install -r requirements.txt"
+  "postCreateCommand": "pip install -r requirements.txt && docker compose up -d"
 }
