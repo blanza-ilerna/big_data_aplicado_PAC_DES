@@ -250,7 +250,7 @@ services:
               "datasource": { "type": "loki", "uid": "loki" },
               "options": { "dedupStrategy": "none", "enableLogDetails": true, "showTime": true, "sortOrder": "Descending" },
               "targets": [
-                { "expr": "{filename=\"/var/log/app/app.log\"}", "legendFormat": "" }
+                { "expr": "{job=\"python_generator\"}", "legendFormat": "" }
               ]
             }
           ]
