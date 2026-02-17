@@ -1,0 +1,51 @@
+# Claude
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+*.egg
+
+# Logs
+*.log
+app.log
+
+# Datos locales de servicios
+data/
+*.db
+*.sqlite3
+
+# Variables de entorno
+.env
+.env.local
+.env.*.local
+
+# Secretos y credenciales
+*.pem
+*.key
+*.crt
+secrets/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Archivos temporales
+*.tmp
+nul

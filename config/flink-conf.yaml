@@ -1,0 +1,21 @@
+jobmanager.rpc.address: flink-jobmanager
+
+jobmanager.memory.process.size: 1600m
+taskmanager.memory.process.size: 1728m
+
+taskmanager.numberOfTaskSlots: 2
+
+heartbeat.interval: 10000
+heartbeat.timeout: 30000
+
+taskmanager.tmp.dirs: /tmp
+
+akka.framesize: 10485760b
+
+env.log.level: INFO
+
+rest.port: 8081
+rest.address: flink-jobmanager
+
+metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+metrics.reporter.prom.port: 9250-9260

@@ -1,0 +1,257 @@
+version: '3.8'
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.4
+    container_name: bigdata-redpanda
+    restart: unless-stopped
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 512M
+      - --reserve-memory 0M
+      - --overprovisioned
+      - --node-id 0
+      - --check=false
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr 0.0.0.0:8082
+      - --advertise-pandaproxy-addr localhost:8082
+    ports:
+      - "19092:19092"
+      - "8082:8082"
+      - "8081:8081"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          memory: 512M
+    networks:
+      - bigdata-network
+
+  prometheus:
+    image: prom/prometheus:v2.48.1
+    container_name: bigdata-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=1d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          memory: 256M
+    networks:
+      - bigdata-network
+
+  loki:
+    image: grafana/loki:2.9.3
+    container_name: bigdata-loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          memory: 256M
+    networks:
+      - bigdata-network
+
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: bigdata-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          memory: 256M
+    networks:
+      - bigdata-network
+
+  flink-jobmanager:
+    image: flink:1.18.1-scala_2.12-java11
+    container_name: bigdata-flink-jobmanager
+    restart: unless-stopped
+    ports:
+      - "8083:8081"
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 1600m
+    volumes:
+      - ./config/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - flink_jobmanager_data:/opt/flink/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/overview"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          memory: 1G
+    networks:
+      - bigdata-network
+
+  flink-taskmanager:
+    image: flink:1.18.1-scala_2.12-java11
+    container_name: bigdata-flink-taskmanager
+    restart: unless-stopped
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    command: taskmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        taskmanager.memory.process.size: 1728m
+    volumes:
+      - ./config/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - flink_taskmanager_data:/opt/flink/data
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "taskmanager"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          memory: 1G
+    networks:
+      - bigdata-network
+
+  postgres:
+    image: postgres:15.6-alpine
+    container_name: bigdata-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bigdata_user
+      POSTGRES_PASSWORD: bigdata_pass
+      POSTGRES_DB: bigdata
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bigdata_user -d bigdata"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          memory: 512M
+    networks:
+      - bigdata-network
+
+  promtail:
+    image: grafana/promtail:2.9.3
+    container_name: bigdata-promtail
+    restart: unless-stopped
+    volumes:
+      - .:/var/log/app:ro
+      - ./config/promtail-config.yml:/etc/promtail/config.yml:ro
+      - promtail_positions:/tmp/positions
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      loki:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+        reservations:
+          memory: 128M
+    networks:
+      - bigdata-network
+
+volumes:
+  redpanda_data:
+  prometheus_data:
+  loki_data:
+  grafana_data:
+  flink_jobmanager_data:
+  flink_taskmanager_data:
+  postgres_data:
+  promtail_positions:
+
+networks:
+  bigdata-network:
+    driver: bridge

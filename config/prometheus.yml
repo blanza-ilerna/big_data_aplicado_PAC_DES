@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'redpanda'
+    static_configs:
+      - targets: ['redpanda:9644']
+
+  - job_name: 'python_app'
+    static_configs:
+      - targets: ['host.docker.internal:8000']
+
+  - job_name: 'flink'
+    static_configs:
+      - targets: ['flink-jobmanager:9250']
