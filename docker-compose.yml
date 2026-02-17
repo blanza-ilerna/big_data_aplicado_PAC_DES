@@ -35,18 +35,43 @@ services:
     container_name: bigdata-prometheus
     restart: unless-stopped
     volumes:
-      - ./config/prometheus:/prometheus-custom-config:ro
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"
-    command:
-      - '--config.file=/prometheus-custom-config/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=1d'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cat > /tmp/prometheus.yml << 'EOF'
+        global:
+          scrape_interval: 15s
+          evaluation_interval: 15s
+          scrape_timeout: 10s
+        scrape_configs:
+          - job_name: 'prometheus'
+            static_configs:
+              - targets: ['localhost:9090']
+          - job_name: 'redpanda'
+            static_configs:
+              - targets: ['redpanda:9644']
+          - job_name: 'python_app'
+            static_configs:
+              - targets: ['host.docker.internal:8000']
+          - job_name: 'flink'
+            static_configs:
+              - targets: ['flink-jobmanager:9250']
+          - job_name: 'flink_job'
+            static_configs:
+              - targets: ['host.docker.internal:8002']
+        EOF
+        exec /bin/prometheus \
+          --config.file=/tmp/prometheus.yml \
+          --storage.tsdb.path=/prometheus \
+          --storage.tsdb.retention.time=1d \
+          --web.console.libraries=/etc/prometheus/console_libraries \
+          --web.console.templates=/etc/prometheus/consoles
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
       interval: 30s
@@ -85,12 +110,156 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       prometheus:
         condition: service_healthy
       loki:
         condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /etc/grafana/provisioning/datasources /etc/grafana/provisioning/dashboards
+        cat > /etc/grafana/provisioning/datasources/datasources.yml << 'EOF'
+        apiVersion: 1
+        datasources:
+          - name: Prometheus
+            uid: prometheus
+            type: prometheus
+            access: proxy
+            url: http://prometheus:9090
+            isDefault: true
+            editable: true
+          - name: Loki
+            uid: loki
+            type: loki
+            access: proxy
+            url: http://loki:3100
+            editable: true
+        EOF
+        cat > /etc/grafana/provisioning/dashboards/provider.yml << 'EOF'
+        apiVersion: 1
+        providers:
+          - name: bigdata
+            orgId: 1
+            folder: Big Data Pipeline
+            type: file
+            disableDeletion: false
+            updateIntervalSeconds: 30
+            allowUiUpdates: true
+            options:
+              path: /etc/grafana/provisioning/dashboards
+        EOF
+        cat > /etc/grafana/provisioning/dashboards/pipeline.json << 'EOF'
+        {
+          "uid": "bigdata-pipeline",
+          "title": "ILERNA - Big Data Aplicado",
+          "tags": ["bigdata", "pipeline"],
+          "timezone": "browser",
+          "schemaVersion": 36,
+          "version": 1,
+          "refresh": "15s",
+          "panels": [
+            {
+              "id": 1,
+              "type": "stat",
+              "title": "Total peticiones generadas",
+              "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+              "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }] } } },
+              "targets": [{ "expr": "sum(app_requests_total)", "legendFormat": "" }]
+            },
+            {
+              "id": 2,
+              "type": "stat",
+              "title": "Mensajes consumidos por el job",
+              "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+              "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue", "value": null }] } } },
+              "targets": [{ "expr": "job_messages_consumed_total", "legendFormat": "" }]
+            },
+            {
+              "id": 3,
+              "type": "stat",
+              "title": "Ventanas escritas en PostgreSQL",
+              "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+              "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "purple", "value": null }] } } },
+              "targets": [{ "expr": "job_windows_flushed_total", "legendFormat": "" }]
+            },
+            {
+              "id": 4,
+              "type": "stat",
+              "title": "Errores de escritura en BD",
+              "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+              "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+              "targets": [{ "expr": "job_db_errors_total", "legendFormat": "" }]
+            },
+            {
+              "id": 5,
+              "type": "timeseries",
+              "title": "Tasa de produccion vs consumo (msg/s)",
+              "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+              "targets": [
+                { "expr": "rate(app_requests_total[1m])", "legendFormat": "Generado" },
+                { "expr": "rate(job_messages_consumed_total[1m])", "legendFormat": "Consumido por job" }
+              ]
+            },
+            {
+              "id": 6,
+              "type": "timeseries",
+              "title": "Tasa de errores HTTP 500 (msg/s)",
+              "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+              "fieldConfig": { "defaults": { "color": { "fixedColor": "red", "mode": "fixed" } } },
+              "targets": [
+                { "expr": "rate(app_requests_total{http_status=\"500\"}[1m])", "legendFormat": "Errores 500/s" }
+              ]
+            },
+            {
+              "id": 7,
+              "type": "timeseries",
+              "title": "Transacciones por ventana de 30s",
+              "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "targets": [
+                { "expr": "job_last_window_transactions", "legendFormat": "Transacciones" }
+              ]
+            },
+            {
+              "id": 8,
+              "type": "timeseries",
+              "title": "Duracion real de ventana (segundos)",
+              "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "targets": [
+                { "expr": "histogram_quantile(0.50, rate(job_window_duration_seconds_bucket[5m]))", "legendFormat": "p50" },
+                { "expr": "histogram_quantile(0.95, rate(job_window_duration_seconds_bucket[5m]))", "legendFormat": "p95" }
+              ]
+            },
+            {
+              "id": 9,
+              "type": "logs",
+              "title": "Logs del generador (app.log)",
+              "gridPos": { "x": 0, "y": 20, "w": 24, "h": 8 },
+              "datasource": { "type": "loki", "uid": "loki" },
+              "options": { "dedupStrategy": "none", "enableLogDetails": true, "showTime": true, "sortOrder": "Descending" },
+              "targets": [
+                { "expr": "{filename=\"/var/log/app/app.log\"}", "legendFormat": "" }
+              ]
+            }
+          ]
+        }
+        EOF
+        exec /run.sh
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
       interval: 30s
@@ -110,9 +279,7 @@ services:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: flink-jobmanager
-        jobmanager.memory.process.size: 512m
-        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
-        metrics.reporter.prom.port: 9250-9260
+        jobmanager.memory.process.size: 1024m
     volumes:
       - flink_jobmanager_data:/opt/flink/data
     healthcheck:
@@ -138,8 +305,6 @@ services:
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 2
         taskmanager.memory.process.size: 1024m
-        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
-        metrics.reporter.prom.port: 9250-9260
     volumes:
       - flink_taskmanager_data:/opt/flink/data
     healthcheck:
@@ -178,9 +343,29 @@ services:
     restart: unless-stopped
     volumes:
       - .:/var/log/app:ro
-      - ./config/promtail:/etc/promtail:ro
       - promtail_positions:/tmp/positions
-    command: -config.file=/etc/promtail/config.yml
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cat > /tmp/promtail.yml << 'EOF'
+        server:
+          http_listen_port: 9080
+          grpc_listen_port: 0
+        positions:
+          filename: /tmp/positions.yaml
+        clients:
+          - url: http://loki:3100/loki/api/v1/push
+        scrape_configs:
+          - job_name: local_app_logs
+            static_configs:
+              - targets:
+                  - localhost
+                labels:
+                  job: python_generator
+                  __path__: /var/log/app/app.log
+        EOF
+        exec /usr/bin/promtail -config.file=/tmp/promtail.yml
     depends_on:
       loki:
         condition: service_healthy

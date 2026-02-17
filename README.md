@@ -85,29 +85,66 @@ Plataforma de visualización que centraliza métricas (Prometheus) y logs (Loki)
 
 Desde GitHub, pulsar **Code → Codespaces → Create codespace on main**.
 
-El entorno se configura automáticamente con todas las dependencias Python definidas en `requirements.txt`.
+El entorno se configura automáticamente:
+- `postCreateCommand` — instala las dependencias Python (`pip install -r requirements.txt`)
+- `postStartCommand` — ejecuta `.devcontainer/start.sh`, que ajusta los permisos del socket Docker y lanza todos los servicios con `docker compose up -d`
 
-### 2. Arrancar la infraestructura
+No es necesario ejecutar ningún comando manual para arrancar la infraestructura.
 
-```bash
-docker-compose up -d
-```
-
-Verificar que todos los servicios están en estado `healthy`:
+### 2. Verificar que la infraestructura está lista
 
 ```bash
-docker-compose ps
+docker compose ps
 ```
 
-### 3. Ejecutar el generador de datos
+Todos los contenedores deben aparecer en estado `healthy`. Si alguno está en `starting`, esperar unos segundos y repetir.
+
+Verificar que Prometheus recoge métricas de todos los targets:
 
 ```bash
-python scripts/generator.py
+curl -s http://localhost:9090/api/v1/targets | python3 -m json.tool | grep -E '"health"|"job"'
 ```
 
-Esto inicia la simulación de eventos de compra que envía datos a Redpanda, expone métricas en el puerto `8000` y escribe logs en `app.log` (recogidos por Promtail).
+### 3. Ejecutar el pipeline de datos
 
-### 4. Acceder a las interfaces web
+Los scripts Python se arrancan manualmente en terminales separadas (abrir con `+` en el panel de terminales de VS Code):
+
+**Terminal 1 — Generador de eventos:**
+```bash
+python3 scripts/generator.py
+```
+Simula compras, publica en Redpanda, expone métricas en `:8000` y escribe logs en `app.log`.
+
+**Terminal 2 — Job de procesamiento:**
+```bash
+python3 scripts/flink_job.py
+```
+Consume de Redpanda, agrega por ventanas de 30 s, escribe en PostgreSQL y expone métricas en `:8002`.
+
+**Terminal 3 — API REST (opcional):**
+```bash
+python3 scripts/api.py
+```
+Sirve los resultados de PostgreSQL mediante FastAPI en `:8001`. Documentación interactiva en `http://localhost:8001/docs`.
+
+### 4. Verificar el flujo extremo a extremo
+
+```bash
+# Datos agregados en PostgreSQL
+docker exec bigdata-postgres psql -U bigdata_user -d bigdata \
+  -c "SELECT product, SUM(num_transactions) AS txn FROM ventas_por_producto GROUP BY product ORDER BY txn DESC;"
+
+# Resumen global vía API REST
+curl -s http://localhost:8001/ventas/global | python3 -m json.tool
+
+# Métricas del generador
+curl -s http://localhost:8000/metrics | grep "^app_"
+
+# Métricas del job
+curl -s http://localhost:8002/metrics | grep "^job_"
+```
+
+### 5. Acceder a las interfaces web
 
 Codespaces genera una URL pública por cada puerto expuesto. El formato es:
 
@@ -123,15 +160,17 @@ echo $CODESPACE_NAME
 
 #### URLs de acceso
 
-| Servicio | Puerto | URL de ejemplo |
+| Servicio | Puerto | Descripción |
 |---|---|---|
-| Grafana | `3000` | `https://nombre-codespace-3000.app.github.dev` |
-| Flink UI | `8083` | `https://nombre-codespace-8083.app.github.dev` |
-| Prometheus | `9090` | `https://nombre-codespace-9090.app.github.dev` |
+| **Grafana** | `3000` | Dashboard pre-configurado con métricas y logs |
+| **API REST** | `8001` | Endpoints de consulta + Swagger en `/docs` |
+| **Flink UI** | `8083` | Estado del clúster Flink |
+| **Prometheus** | `9090` | Explorador de métricas (PromQL) |
+| **Redpanda Console** | `8082` | REST Proxy del broker |
 
 > **Nota:** Los puertos son **privados por defecto** — solo accesibles con la sesión de GitHub activa. Para hacerlos públicos, ir a la pestaña **Ports** del terminal, clic derecho sobre el puerto → **Port Visibility → Public**.
 
-> Grafana está configurado con acceso anónimo en rol Admin, por lo que no requiere usuario ni contraseña.
+> Grafana está configurado con acceso anónimo en rol Admin, por lo que no requiere usuario ni contraseña. El dashboard **ILERNA - Big Data Aplicado** se aprovisiona automáticamente al arrancar.
 
 ---
 
@@ -140,14 +179,25 @@ echo $CODESPACE_NAME
 ```
 .
 ├── .devcontainer/
-│   └── devcontainer.json       # Configuración de GitHub Codespaces
+│   ├── Dockerfile              # Imagen con Docker CLI instalado
+│   ├── devcontainer.json       # Configuración de GitHub Codespaces
+│   └── start.sh                # Script de arranque (chmod socket + docker compose up)
 ├── config/
-│   ├── flink-conf.yaml         # Configuración de Apache Flink
-│   ├── prometheus.yml          # Targets de scraping de Prometheus
-│   └── promtail-config.yml     # Ruta de logs hacia Loki
+│   ├── prometheus/
+│   │   └── prometheus.yml      # Targets de scraping de Prometheus
+│   ├── promtail/
+│   │   └── config.yml          # Ruta de logs hacia Loki
+│   └── grafana/
+│       └── provisioning/
+│           ├── datasources/
+│           │   └── datasources.yml   # Prometheus + Loki (auto-provisionados)
+│           └── dashboards/
+│               ├── provider.yml      # Proveedor de dashboards
+│               └── pipeline.json     # Dashboard "ILERNA - Big Data Aplicado"
 ├── scripts/
 │   ├── generator.py            # Simulador de eventos (Redpanda + Prometheus + Loki)
-│   └── flink_job.py            # Job de procesamiento en Apache Flink
+│   ├── flink_job.py            # Job de procesamiento con ventanas de 30 s
+│   └── api.py                  # API REST FastAPI sobre PostgreSQL
 ├── docker-compose.yml          # Definición de servicios
 └── requirements.txt            # Dependencias Python
 ```
@@ -173,9 +223,11 @@ kafka-python==2.0.2
 prometheus_client==0.20.0
 psycopg2-binary==2.9.9
 python-json-logger==2.0.7
+fastapi==0.111.0
+uvicorn==0.30.1
 ```
 
-Instalación manual:
+En Codespaces se instalan automáticamente al crear el entorno. Instalación manual:
 
 ```bash
 pip install -r requirements.txt
