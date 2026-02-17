@@ -59,9 +59,6 @@ services:
           - job_name: 'python_app'
             static_configs:
               - targets: ['host.docker.internal:8000']
-          - job_name: 'flink'
-            static_configs:
-              - targets: ['flink-jobmanager:9250']
           - job_name: 'flink_job'
             static_configs:
               - targets: ['host.docker.internal:8002']

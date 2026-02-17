@@ -5,18 +5,49 @@ import signal
 import sys
 import time
 import logging
+import urllib.request
 from datetime import datetime
 from kafka import KafkaProducer
 from prometheus_client import start_http_server, Counter
 from pythonjsonlogger import jsonlogger
 
-# --- LOGS (JSON estructurado para Loki) ---
+
+# --- LOKI HANDLER (push directo, sin promtail) ---
+class LokiHandler(logging.Handler):
+    def __init__(self, url="http://localhost:3100/loki/api/v1/push"):
+        super().__init__()
+        self.url = url
+
+    def emit(self, record):
+        try:
+            log_entry = self.format(record)
+            ts_ns = str(int(record.created * 1_000_000_000))
+            payload = json.dumps({
+                "streams": [{
+                    "stream": {"job": "python_generator", "level": record.levelname.lower()},
+                    "values": [[ts_ns, log_entry]]
+                }]
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                self.url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=2)
+        except Exception:
+            pass  # Loki no disponible: no interrumpir el generador
+
+
+# --- LOGS (JSON estructurado) ---
 handler_file = logging.FileHandler("app.log")
 handler_file.setFormatter(jsonlogger.JsonFormatter())
 handler_stdout = logging.StreamHandler(sys.stdout)
 handler_stdout.setFormatter(jsonlogger.JsonFormatter())
+handler_loki = LokiHandler()
+handler_loki.setFormatter(jsonlogger.JsonFormatter())
 
-logging.basicConfig(level=logging.INFO, handlers=[handler_file, handler_stdout])
+logging.basicConfig(level=logging.INFO, handlers=[handler_file, handler_stdout, handler_loki])
 logger = logging.getLogger(__name__)
 
 # --- MÉTRICAS (Prometheus) ---

@@ -127,6 +127,18 @@ python3 scripts/api.py
 ```
 Sirve los resultados de PostgreSQL mediante FastAPI en `:8001`. Documentación interactiva en `http://localhost:8001/docs`.
 
+#### Endpoints disponibles
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| `GET` | `/health` | Estado del servidor y conexión a BD |
+| `GET` | `/ventas/global` | Resumen global: total de transacciones, importe y producto top |
+| `GET` | `/ventas/productos` | Ventas por producto por ventana (param: `product`, `limit`) |
+| `GET` | `/ventas/productos/resumen` | Agregado total por producto (todas las ventanas) |
+| `GET` | `/ventas/usuarios` | Ventas por usuario por ventana (param: `user_id`, `limit`) |
+| `GET` | `/ventas/usuarios/resumen` | Agregado total por usuario (todas las ventanas) |
+| `GET` | `/docs` | Swagger UI interactivo |
+
 ### 4. Verificar el flujo extremo a extremo
 
 ```bash
