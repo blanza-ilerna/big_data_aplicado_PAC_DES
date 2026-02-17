@@ -1,0 +1,107 @@
+{
+  "uid": "bigdata-pipeline",
+  "title": "ILERNA - Big Data Aplicado",
+  "tags": ["bigdata", "pipeline"],
+  "timezone": "browser",
+  "schemaVersion": 36,
+  "version": 1,
+  "refresh": "15s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total peticiones generadas",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }] } } },
+      "targets": [{ "expr": "sum(app_requests_total)", "legendFormat": "" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Mensajes consumidos por el job",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue", "value": null }] } } },
+      "targets": [{ "expr": "job_messages_consumed_total", "legendFormat": "" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Ventanas escritas en PostgreSQL",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "purple", "value": null }] } } },
+      "targets": [{ "expr": "job_windows_flushed_total", "legendFormat": "" }]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Errores de escritura en BD",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "targets": [{ "expr": "job_db_errors_total", "legendFormat": "" }]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Tasa de producción vs consumo (msg/s)",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "expr": "rate(app_requests_total[1m])", "legendFormat": "Generado ({{http_status}})" },
+        { "expr": "rate(job_messages_consumed_total[1m])", "legendFormat": "Consumido por job" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Tasa de errores HTTP 500 (msg/s)",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "red", "mode": "fixed" } } },
+      "targets": [
+        { "expr": "rate(app_requests_total{http_status=\"500\"}[1m])", "legendFormat": "Errores 500/s" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Transacciones por ventana de 30s",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "job_last_window_transactions", "legendFormat": "Transacciones" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Duración real de ventana (segundos)",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(job_window_duration_seconds_bucket[5m]))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, rate(job_window_duration_seconds_bucket[5m]))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "logs",
+      "title": "Logs del generador (app.log)",
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "dedupStrategy": "none", "enableLogDetails": true, "showTime": true, "sortOrder": "Descending" },
+      "targets": [
+        { "expr": "{filename=\"/var/log/app/app.log\"}", "legendFormat": "" }
+      ]
+    }
+  ]
+}

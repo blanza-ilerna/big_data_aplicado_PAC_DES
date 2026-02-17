@@ -19,3 +19,7 @@ scrape_configs:
   - job_name: 'flink'
     static_configs:
       - targets: ['flink-jobmanager:9250']
+
+  - job_name: 'flink_job'
+    static_configs:
+      - targets: ['host.docker.internal:8002']
