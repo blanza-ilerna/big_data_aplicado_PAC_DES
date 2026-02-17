@@ -15,4 +15,4 @@ scrape_configs:
           - localhost
         labels:
           job: python_generator
-          __path__: /var/log/app/app.log # El archivo que genera generator.py
+          __path__: /var/log/app/app.log
