@@ -1,9 +1,11 @@
 {
   "name": "ILERNA - Big Data Aplicado",
-  "image": "mcr.microsoft.com/devcontainers/python:3.11",
-  "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  "build": {
+    "dockerfile": "Dockerfile"
   },
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
   "customizations": {
     "vscode": {
       "extensions": [
@@ -15,5 +17,6 @@
     }
   },
   "forwardPorts": [3000, 8083, 8081, 8082, 9090, 5432, 8000, 3100],
-  "postCreateCommand": "pip install -r requirements.txt && docker compose up -d"
+  "postCreateCommand": "pip install -r requirements.txt",
+  "postStartCommand": "docker compose up -d"
 }
