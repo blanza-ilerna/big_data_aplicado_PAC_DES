@@ -1,7 +1,7 @@
 {
   "name": "ILERNA - Big Data Aplicado",
   "dockerComposeFile": "../docker-compose.yml",
-  "service": "grafana", // Servicio principal, pero arrancará todos
+  "service": "workspace",
   "workspaceFolder": "/workspace",
   "customizations": {
     "vscode": {

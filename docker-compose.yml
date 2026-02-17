@@ -1,6 +1,16 @@
 version: '3.8'
 
 services:
+  workspace:
+    image: mcr.microsoft.com/devcontainers/python:3.11
+    container_name: bigdata-workspace
+    command: sleep infinity
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    networks:
+      - bigdata-network
+
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:v24.2.4
     container_name: bigdata-redpanda
