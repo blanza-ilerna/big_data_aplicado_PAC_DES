@@ -59,7 +59,7 @@ El job está en `scripts/flink_job.py` y usa **PyFlink** (Table API + SQL):
 - **Tolerancia a fallos:** *checkpoint* cada 30 s en el volumen `flink_checkpoints`, compartido por el JobManager y el TaskManager. Los offsets se confirman en el consumer group `flink-ventas`.
 - **Sin duplicados:** si el job se relanza y reprocesa mensajes, el upsert sobrescribe la ventana en lugar de duplicarla.
 
-La imagen de Flink se construye desde `docker/flink/Dockerfile` (Flink 1.18.1 + PyFlink + conectores Kafka y JDBC). El job **no se ejecuta con `python3`**: se envía al clúster con `bash scripts/submit_flink_job.sh`, y después aparece en la UI de Flink (`:8083`). Flink expone métricas en el puerto `9249` del JobManager y del TaskManager.
+La imagen de Flink se construye desde `docker/flink/Dockerfile` (Flink 2.2.1 + PyFlink 2.2.1 en un entorno virtual + conectores Kafka y JDBC, cuyas dependencias resuelve Maven desde `docker/flink/pom.xml`). El job **no se ejecuta con `python3`**: se envía al clúster con `bash scripts/submit_flink_job.sh`, y después aparece en la UI de Flink (`:8083`). Flink expone métricas en el puerto `9249` del JobManager y del TaskManager.
 
 Al arrancar el Codespace, `start.sh` envía el job automáticamente si no está en ejecución (al parar el Codespace, el job se pierde con el reinicio del JobManager).
 
@@ -67,7 +67,7 @@ Al arrancar el Codespace, `start.sh` envía el job automáticamente si no está 
 
 #### PostgreSQL
 
-Base de datos relacional donde se persisten los resultados del job de Flink. Las tablas se crean con `sql/schema.sql`, que ejecuta `scripts/init_infra.sh` al arrancar el Codespace. Se utiliza la imagen Alpine para reducir el tamaño. Los datos se guardan en un volumen Docker (`postgres_data`) para que persistan entre reinicios del Codespace.
+Base de datos relacional donde se persisten los resultados del job de Flink. Las tablas se crean con `sql/schema.sql`, que ejecuta `scripts/init_infra.sh` al arrancar el Codespace. Se utiliza la imagen Alpine de PostgreSQL 18 para reducir el tamaño. Los datos se guardan en un volumen Docker (`postgres18_data`) para que persistan entre reinicios del Codespace.
 
 #### Prometheus
 
@@ -96,7 +96,21 @@ Trae dos **alertas** provisionadas (`docker/grafana/provisioning/alerting/rules.
 - **Job de Flink caído:** no hay ningún job en ejecución durante 2 minutos.
 - **Sin ventanas nuevas en PostgreSQL:** la última ventana tiene más de 3 minutos.
 
-No hay ningún *contact point* configurado: las alertas se ven en la UI pero no envían avisos.
+Las alertas se ven en la UI con su estado (*Normal*, *Pending*, *Firing*), pero **no envían avisos**: no hay servidor de correo, así que `alerting/notifications.yml` las silencia con el *mute timing* `siempre` (así Grafana no llena el log de errores `SMTP not configured`). Para recibir avisos, crea un *contact point* (Slack, Discord, email...), ponlo como `receiver` en ese archivo y quita `mute_time_intervals`.
+
+### Versiones
+
+| Componente | Versión |
+|---|---|
+| Redpanda / Redpanda Console | v26.2.7 / v3.14.0 |
+| Apache Flink / PyFlink | 2.2.1 (Java 17, Python 3.12) |
+| Conectores Flink | Kafka `5.0.0-2.2`, JDBC `4.1.0-2.2`, driver PostgreSQL `42.7.14` |
+| PostgreSQL | 18.7 (Alpine) |
+| Prometheus | v3.16.0 |
+| Loki | 3.7.10 |
+| Grafana | 13.2.6 |
+
+Todas las imágenes tienen la versión fijada (nunca `latest`). Si actualizas un Codespace que ya tenía versiones anteriores, los volúmenes de Redpanda y PostgreSQL son nuevos (`redpanda_data_v26`, `postgres18_data`), porque los datos antiguos no son compatibles. Los antiguos se pueden borrar con `docker volume prune`.
 
 ---
 
@@ -232,7 +246,7 @@ echo $CODESPACE_NAME
 │   ├── devcontainer.json       # Configuración de GitHub Codespaces
 │   └── start.sh                # Arranque: compose up, topic/tablas y envío del job
 ├── docker/
-│   ├── flink/Dockerfile        # Flink 1.18.1 + PyFlink + conectores Kafka/JDBC
+│   ├── flink/                  # Dockerfile (Flink 2.2.1 + PyFlink) y pom.xml (conectores)
 │   ├── prometheus/             # Imagen con prometheus.yml (targets)
 │   └── grafana/provisioning/   # Datasources, dashboard y alertas
 ├── scripts/
@@ -270,20 +284,37 @@ Son los valores por defecto. Para cambiarlos, copia `.env.example` a `.env` (no 
 
 ```
 kafka-python==2.3.3
-prometheus_client==0.20.0
-psycopg2-binary==2.9.9
-python-json-logger==2.0.7
-fastapi==0.111.0
-uvicorn==0.30.1
+prometheus_client==0.26.0
+psycopg2-binary==2.9.13
+python-json-logger==4.2.0
+fastapi==0.163.1
+uvicorn==0.54.0
 ```
 
 PyFlink **no** está en `requirements.txt`: solo se instala dentro de la imagen de Flink.
+
+`kafka-python` se mantiene en la rama 2.3.x (mantenida): la 3.0 cambia la firma de los serializadores y la jerarquía de excepciones.
 
 En Codespaces se instalan automáticamente al crear el entorno. Instalación manual:
 
 ```bash
 pip install -r requirements.txt
 ```
+
+---
+
+## Prebuilds de Codespaces (opcional)
+
+Un *prebuild* deja preparado el devcontainer, de modo que el Codespace arranca en segundos en lugar de minutos. **No hace falta un fork:** se activa en el propio repositorio.
+
+1. En GitHub: **Settings → Codespaces → Set up prebuild**.
+2. Rama: `main`. Configuración: `.devcontainer/devcontainer.json`. Región: la más cercana (Europa Oeste).
+3. Disparador: *On configuration change* (solo se rehace cuando cambia el devcontainer), para gastar menos.
+
+Ten en cuenta:
+- El prebuild ejecuta `postCreateCommand` (`pip install`), pero **no** `postStartCommand`: las imágenes de `docker compose` (sobre todo la de Flink) se siguen construyendo al arrancar.
+- Cuesta almacenamiento y minutos de Actions a la cuenta dueña del repositorio.
+- Solo se aplica a los Codespaces creados **desde este repositorio**. Si los alumnos hacen *fork*, cada fork necesita su propio prebuild. Si crean el Codespace directamente desde el repo original (o desde una plantilla), sí lo aprovechan.
 
 ---
 

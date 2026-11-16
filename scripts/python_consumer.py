@@ -17,12 +17,12 @@ from datetime import datetime, timezone
 from kafka import KafkaConsumer
 import psycopg2
 from psycopg2.extras import execute_values
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger.json import JsonFormatter
 from prometheus_client import start_http_server, Counter, Gauge, Histogram
 
 # --- LOGS ---
 handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(jsonlogger.JsonFormatter())
+handler.setFormatter(JsonFormatter())
 logging.basicConfig(level=logging.INFO, handlers=[handler])
 logger = logging.getLogger(__name__)
 

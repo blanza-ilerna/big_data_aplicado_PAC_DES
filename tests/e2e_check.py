@@ -105,9 +105,11 @@ def flink_no_restarts():
     """Un job que falla y se reinicia en bucle puede aparecer como RUNNING un instante."""
     jid = flink_job_running()
     exc = http_json(f"{FLINK}/jobs/{jid}/exceptions")
-    root = (exc.get("root-exception") or "").strip()
-    if root:
-        raise AssertionError("el job ha fallado al menos una vez: " + root.splitlines()[0][:300])
+    entries = (exc.get("exceptionHistory") or {}).get("entries") or []
+    if entries:
+        first = entries[0]
+        msg = (first.get("exceptionName") or "") + ": " + (first.get("stacktrace") or "").split("\n")[0]
+        raise AssertionError(f"el job ha fallado {len(entries)} vez/veces: {msg[:300]}")
     return "sin excepciones"
 
 
@@ -211,6 +213,27 @@ def grafana_alert_rules():
     return f"{len(rules)} reglas"
 
 
+def grafana_no_smtp_errors():
+    import subprocess
+    out = subprocess.run(["docker", "logs", "bigdata-grafana"], capture_output=True, text=True, timeout=30)
+    bad = [l for l in (out.stdout + out.stderr).splitlines() if "SMTP not configured" in l]
+    if bad:
+        raise AssertionError(f"{len(bad)} errores de SMTP en el log de Grafana")
+    return "sin errores de SMTP"
+
+
+def grafana_alerts_muted():
+    """Las alertas no deben intentar notificar por email (no hay SMTP)."""
+    auth = {"Authorization": GRAFANA_AUTH}
+    mutes = {m["name"] for m in http_json(f"{GRAFANA}/api/v1/provisioning/mute-timings", headers=auth)}
+    if "siempre" not in mutes:
+        raise AssertionError(f"falta el mute timing 'siempre' (hay: {mutes})")
+    routes = http_json(f"{GRAFANA}/api/v1/provisioning/policies", headers=auth).get("routes") or []
+    if not any("siempre" in (r.get("mute_time_intervals") or []) for r in routes):
+        raise AssertionError(f"ninguna política usa 'siempre': {routes}")
+    return "mute timing 'siempre' aplicado"
+
+
 def loki_logs():
     now = int(time.time())
     q = urllib.parse.urlencode({"query": '{job="python_generator"}', "limit": 5,
@@ -256,6 +279,8 @@ def main():
     check("datasources", grafana_datasources)
     check("consultas de los paneles", grafana_panels)
     check("reglas de alerta", grafana_alert_rules)
+    check("alertas sin envío de email", grafana_alerts_muted)
+    check("log de Grafana sin errores de SMTP", grafana_no_smtp_errors, required=False)
     print("Loki")
     check("logs del generador", lambda: wait_until("logs", loki_logs, 60))
     print("Flink (estabilidad)")

@@ -5,10 +5,15 @@
 #
 # Credenciales: se leen de .env si existe (ver .env.example); si no, se usan los
 # valores por defecto que aparecen tras ":-".
+#
+# Volúmenes con sufijo de versión (redpanda_data_v26, postgres18_data): Redpanda no
+# admite saltar varias versiones con datos existentes y PostgreSQL no lee datos de
+# otra versión mayor. Al subir de versión se cambia el nombre y se empieza de cero
+# (los datos son regenerables). Los antiguos se borran con: docker volume prune
 
 x-flink-image: &flink-image
   build: ./docker/flink
-  image: bigdata-flink:1.18.1-pyflink
+  image: bigdata-flink:2.2.1-pyflink
 
 # Variables que lee scripts/flink_job.py (se ejecuta dentro del JobManager)
 x-flink-env: &flink-db-env
@@ -18,7 +23,7 @@ x-flink-env: &flink-db-env
 
 services:
   redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v24.2.4
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.7
     container_name: bigdata-redpanda
     restart: unless-stopped
     command:
@@ -27,7 +32,6 @@ services:
       - --memory 512M
       - --reserve-memory 0M
       - --overprovisioned
-      - --node-id 0
       - --check=false
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
@@ -38,7 +42,7 @@ services:
       - "8082:8082"
       - "8081:8081"
     volumes:
-      - redpanda_data:/var/lib/redpanda/data
+      - redpanda_data_v26:/var/lib/redpanda/data
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster health | grep -Eq 'Healthy:[[:space:]]+true'"]
       interval: 30s
@@ -50,7 +54,7 @@ services:
 
   # Interfaz web de Redpanda: topics, mensajes, consumer groups y lag
   redpanda-console:
-    image: docker.redpanda.com/redpandadata/console:v2.8.19
+    image: docker.redpanda.com/redpandadata/console:v3.14.0
     container_name: bigdata-redpanda-console
     restart: unless-stopped
     ports:
@@ -67,7 +71,7 @@ services:
 
   prometheus:
     build: ./docker/prometheus
-    image: bigdata-prometheus:2.48.1
+    image: bigdata-prometheus:3.16.0
     container_name: bigdata-prometheus
     restart: unless-stopped
     volumes:
@@ -80,8 +84,6 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=1d
-      - --web.console.libraries=/etc/prometheus/console_libraries
-      - --web.console.templates=/etc/prometheus/consoles
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
       interval: 30s
@@ -91,7 +93,7 @@ services:
       - bigdata-network
 
   loki:
-    image: grafana/loki:2.9.3
+    image: grafana/loki:3.7.10
     container_name: bigdata-loki
     restart: unless-stopped
     ports:
@@ -99,17 +101,14 @@ services:
     volumes:
       - loki_data:/loki
     command: -config.file=/etc/loki/local-config.yaml
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    # Sin healthcheck: la imagen de Loki 3 no garantiza traer wget/curl.
+    # Su estado lo comprueba tests/e2e_check.py (GET /ready desde fuera).
     networks:
       - bigdata-network
 
   grafana:
     build: ./docker/grafana
-    image: bigdata-grafana:10.2.3
+    image: bigdata-grafana:13.2.6
     container_name: bigdata-grafana
     restart: unless-stopped
     ports:
@@ -131,7 +130,7 @@ services:
       prometheus:
         condition: service_healthy
       loki:
-        condition: service_healthy
+        condition: service_started
       postgres:
         condition: service_healthy
     healthcheck:
@@ -157,10 +156,12 @@ services:
         parallelism.default: 1
         metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
         metrics.reporter.prom.port: 9249
-        state.checkpoints.dir: file:///opt/flink/checkpoints/checkpoints
-        state.savepoints.dir: file:///opt/flink/checkpoints/savepoints
-        state.checkpoints.num-retained: 2
+        execution.checkpointing.dir: file:///opt/flink/checkpoints/checkpoints
+        execution.checkpointing.savepoint-dir: file:///opt/flink/checkpoints/savepoints
+        execution.checkpointing.num-retained: 2
         execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+        python.client.executable: /opt/pyflink/bin/python
+        python.executable: /opt/pyflink/bin/python
     volumes:
       - flink_jobmanager_data:/opt/flink/data
       - flink_checkpoints:/opt/flink/checkpoints   # compartido con el TaskManager
@@ -189,10 +190,12 @@ services:
         taskmanager.memory.process.size: 1024m
         metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
         metrics.reporter.prom.port: 9249
-        state.checkpoints.dir: file:///opt/flink/checkpoints/checkpoints
-        state.savepoints.dir: file:///opt/flink/checkpoints/savepoints
-        state.checkpoints.num-retained: 2
+        execution.checkpointing.dir: file:///opt/flink/checkpoints/checkpoints
+        execution.checkpointing.savepoint-dir: file:///opt/flink/checkpoints/savepoints
+        execution.checkpointing.num-retained: 2
         execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+        python.client.executable: /opt/pyflink/bin/python
+        python.executable: /opt/pyflink/bin/python
     volumes:
       - flink_taskmanager_data:/opt/flink/data
       - flink_checkpoints:/opt/flink/checkpoints
@@ -205,18 +208,19 @@ services:
       - bigdata-network
 
   postgres:
-    image: postgres:15.6-alpine
+    image: postgres:18.7-alpine
     container_name: bigdata-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-bigdata_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bigdata_pass}
       POSTGRES_DB: ${POSTGRES_DB:-bigdata}
-      PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # Desde PostgreSQL 18 el volumen se monta en /var/lib/postgresql
+      # (los datos quedan en /var/lib/postgresql/18/docker)
+      - postgres18_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
@@ -227,14 +231,14 @@ services:
       - bigdata-network
 
 volumes:
-  redpanda_data:
+  redpanda_data_v26:
   prometheus_data:
   loki_data:
   grafana_data:
   flink_jobmanager_data:
   flink_taskmanager_data:
   flink_checkpoints:
-  postgres_data:
+  postgres18_data:
 
 networks:
   bigdata-network:

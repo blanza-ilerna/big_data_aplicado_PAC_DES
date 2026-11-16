@@ -11,7 +11,7 @@ import urllib.request
 from datetime import datetime, timezone
 from kafka import KafkaProducer
 from prometheus_client import start_http_server, Counter
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger.json import JsonFormatter
 
 
 # --- LOKI HANDLER (push directo a Loki, sin Promtail) ---
@@ -59,14 +59,14 @@ class DropWhenFullQueueHandler(logging.handlers.QueueHandler):
 
 # --- LOGS (JSON estructurado) ---
 handler_file = logging.FileHandler("app.log")
-handler_file.setFormatter(jsonlogger.JsonFormatter())
+handler_file.setFormatter(JsonFormatter())
 handler_stdout = logging.StreamHandler(sys.stdout)
-handler_stdout.setFormatter(jsonlogger.JsonFormatter())
+handler_stdout.setFormatter(JsonFormatter())
 
 # El envío HTTP a Loki se hace en un hilo aparte (QueueListener): el bucle del
 # generador nunca espera a la red.
 handler_loki = LokiHandler()
-handler_loki.setFormatter(jsonlogger.JsonFormatter())
+handler_loki.setFormatter(JsonFormatter())
 loki_queue = queue.Queue(maxsize=1000)
 loki_listener = logging.handlers.QueueListener(loki_queue, handler_loki)
 loki_listener.start()

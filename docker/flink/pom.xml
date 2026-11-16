@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Solo sirve para que Maven descargue los conectores y TODAS sus dependencias
+  (docker/flink/Dockerfile, etapa "deps"). No se compila nada.
+  Al subir de versión de Flink, cambia las versiones de los conectores a las
+  publicadas para esa versión: https://repo1.maven.org/maven2/org/apache/flink/
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>ilerna.bigdata</groupId>
+  <artifactId>flink-connectors</artifactId>
+  <version>1</version>
+
+  <properties>
+    <kafka.connector.version>5.0.0-2.2</kafka.connector.version>
+    <jdbc.connector.version>4.1.0-2.2</jdbc.connector.version>
+    <postgresql.version>42.7.14</postgresql.version>
+  </properties>
+
+  <dependencies>
+    <!-- Kafka / Redpanda (jar "sql" ya autocontenido) -->
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-sql-connector-kafka</artifactId>
+      <version>${kafka.connector.version}</version>
+    </dependency>
+    <!-- JDBC: desde la 4.x el conector se divide en núcleo + dialecto -->
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-connector-jdbc-core</artifactId>
+      <version>${jdbc.connector.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-connector-jdbc-postgres</artifactId>
+      <version>${jdbc.connector.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>${postgresql.version}</version>
+    </dependency>
+  </dependencies>
+</project>

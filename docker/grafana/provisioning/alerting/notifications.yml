@@ -1,0 +1,31 @@
+# Notificaciones de las alertas.
+#
+# No hay servidor de correo (SMTP), así que si Grafana intenta avisar por email
+# llena el log de errores "SMTP not configured". Para evitarlo, las alertas del
+# pipeline se silencian siempre (mute timing "siempre"): siguen apareciendo en
+# Alerting -> Alert rules con su estado (Normal / Pending / Firing), pero no se
+# envía nada.
+#
+# Para recibir avisos de verdad: crea un contact point (Slack, Discord, email con
+# SMTP...), ponlo como "receiver" abajo y quita "mute_time_intervals".
+apiVersion: 1
+
+muteTimes:
+  - orgId: 1
+    name: siempre
+    time_intervals:
+      - times:
+          - start_time: "00:00"
+            end_time: "24:00"
+
+policies:
+  - orgId: 1
+    receiver: grafana-default-email
+    group_by: ["grafana_folder", "alertname"]
+    routes:
+      # Todas las reglas del pipeline llevan la etiqueta "severity"
+      - receiver: grafana-default-email
+        object_matchers:
+          - ["severity", "=~", ".+"]
+        mute_time_intervals:
+          - siempre

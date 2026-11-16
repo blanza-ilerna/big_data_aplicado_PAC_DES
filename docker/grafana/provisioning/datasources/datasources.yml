@@ -19,7 +19,8 @@ datasources:
   # Resultados del job de Flink
   - name: PostgreSQL
     uid: postgres
-    type: postgres
+    # Identificador del plugin de PostgreSQL desde Grafana 11 (antes "postgres")
+    type: grafana-postgresql-datasource
     access: proxy
     url: postgres:5432
     # Grafana sustituye $VARIABLE por las variables de entorno del contenedor
@@ -28,7 +29,7 @@ datasources:
     jsonData:
       database: $POSTGRES_DB
       sslmode: disable
-      postgresVersion: 1500
+      postgresVersion: 1800
       timescaledb: false
     secureJsonData:
       password: $POSTGRES_PASSWORD

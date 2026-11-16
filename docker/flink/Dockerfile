@@ -1,23 +1,32 @@
-# Flink 1.18.1 + PyFlink + conectores Kafka y JDBC (PostgreSQL)
-# La imagen base usa Ubuntu 22.04 (jammy) -> Python 3.10, soportado por PyFlink 1.18.
-FROM flink:1.18.1-scala_2.12-java11
+# Flink 2.2.1 + PyFlink + conectores Kafka y JDBC (PostgreSQL)
+#
+# Etapa 1 (deps): Maven resuelve los conectores y sus dependencias (pom.xml).
+# Etapa 2: imagen oficial de Flink + PyFlink en un entorno virtual + los jars.
 
-ARG KAFKA_CONNECTOR=3.1.0-1.18
-ARG JDBC_CONNECTOR=3.1.2-1.18
-ARG POSTGRES_DRIVER=42.7.4
+FROM maven:3.9.16-eclipse-temurin-17 AS deps
+COPY pom.xml /build/pom.xml
+# slf4j-api y commons-logging ya los trae Flink: duplicarlos rompe el logging
+RUN mvn -q -B -f /build/pom.xml dependency:copy-dependencies \
+        -DincludeScope=runtime \
+        -DexcludeArtifactIds=slf4j-api,commons-logging \
+        -DoutputDirectory=/deps \
+    && ls -1 /deps
+
+# La imagen base usa Ubuntu 24.04 (noble) -> Python 3.12, soportado por PyFlink 2.2
+FROM flink:2.2.1-scala_2.12-java17
 
 RUN apt-get update -y \
-    && apt-get install -y --no-install-recommends python3 python3-pip curl procps \
-    && ln -sf /usr/bin/python3 /usr/bin/python \
+    && apt-get install -y --no-install-recommends python3 python3-venv curl procps \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir apache-flink==1.18.1
+# Python 3.12 de Ubuntu no permite `pip install` en el sistema (PEP 668): venv propio.
+# El PATH hace que `python` sea el del venv, también en `docker exec ... flink run -py`.
+RUN python3 -m venv /opt/pyflink \
+    && /opt/pyflink/bin/pip install --no-cache-dir apache-flink==2.2.1
+ENV PATH=/opt/pyflink/bin:$PATH
 
 # Conectores en lib/ para que los vean el JobManager, el TaskManager y el cliente `flink run`
-RUN cd /opt/flink/lib \
-    && curl -fsSLO https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/${KAFKA_CONNECTOR}/flink-sql-connector-kafka-${KAFKA_CONNECTOR}.jar \
-    && curl -fsSLO https://repo1.maven.org/maven2/org/apache/flink/flink-connector-jdbc/${JDBC_CONNECTOR}/flink-connector-jdbc-${JDBC_CONNECTOR}.jar \
-    && curl -fsSLO https://repo1.maven.org/maven2/org/postgresql/postgresql/${POSTGRES_DRIVER}/postgresql-${POSTGRES_DRIVER}.jar
+COPY --from=deps /deps/ /opt/flink/lib/
 
 # Reporter de métricas Prometheus: normalmente ya viene en plugins/; si no, se copia desde opt/
 RUN if ! ls /opt/flink/plugins/metrics-prometheus/*.jar >/dev/null 2>&1; then \
