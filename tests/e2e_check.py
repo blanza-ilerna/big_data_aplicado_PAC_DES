@@ -39,6 +39,14 @@ PG = dict(host="localhost", port=5432, connect_timeout=5,
           password=os.getenv("POSTGRES_PASSWORD", "bigdata_pass"))
 
 failures, warnings = [], []
+IN_CI = os.getenv("GITHUB_ACTIONS") == "true"
+
+
+def ci_annotation(level, title, message):
+    """En GitHub Actions, publica el mensaje como anotación visible en el resumen del run."""
+    if IN_CI:
+        msg = str(message).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::{level} title={title}::{msg[:4000]}")
 
 
 def http_json(url, data=None, headers=None, timeout=10):
@@ -56,6 +64,7 @@ def check(name, fn, required=True):
     except Exception as e:  # noqa: BLE001 — se informa de cualquier fallo
         tag = "FALLO" if required else "AVISO"
         print(f"  {tag} {name} — {e}")
+        ci_annotation("error" if required else "warning", name, e)
         (failures if required else warnings).append(name)
         return False
 

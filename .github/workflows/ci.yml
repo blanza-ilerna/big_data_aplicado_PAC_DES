@@ -1,6 +1,7 @@
 # CI: comprobaciones estáticas y prueba extremo a extremo del pipeline completo.
 # El job e2e levanta todo el docker compose en el runner (como en Codespaces, los
 # scripts Python corren en el host y Prometheus los ve por host.docker.internal).
+# Los fallos se publican como anotaciones (resumen del run) para verlos sin abrir el log.
 name: CI
 
 on:
@@ -12,8 +13,8 @@ jobs:
   static:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt pyyaml
@@ -40,8 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
@@ -66,10 +67,23 @@ jobs:
           sleep 60
           python tests/e2e_check.py --timeout 120
 
-      - name: Logs si algo falla
+      - name: Diagnóstico si algo falla
         if: failure()
         run: |
-          docker compose ps
+          # Cada bloque se publica como anotación (máx. 10 por paso)
+          note() {  # note <título> <texto>
+            local msg
+            msg=$(printf '%s' "$2" | tail -c 3500 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::warning title=$1::$msg"
+          }
+          note "docker compose ps" "$(docker compose ps -a --format 'table {{.Service}}\t{{.State}}\t{{.Status}}')"
+          note "Flink jobs" "$(curl -s localhost:8083/jobs/overview || true)"
+          note "Flink JobManager (errores)" "$(docker logs bigdata-flink-jobmanager 2>&1 | grep -iE 'exception|error|caused by' | tail -40)"
+          note "Flink TaskManager (errores)" "$(docker logs bigdata-flink-taskmanager 2>&1 | grep -iE 'exception|error|caused by' | tail -40)"
+          note "Grafana (errores)" "$(docker logs bigdata-grafana 2>&1 | grep -iE 'level=error|lvl=eror' | tail -30)"
+          note "Prometheus targets" "$(curl -s localhost:9090/api/v1/targets | python3 -c 'import json,sys;[print(t["labels"]["job"],t["scrapeUrl"],t["health"],t.get("lastError","")) for t in json.load(sys.stdin)["data"]["activeTargets"]]' || true)"
+          note "Métricas Flink disponibles" "$(curl -s 'localhost:9090/api/v1/label/__name__/values' | python3 -c 'import json,sys;print(chr(10).join(n for n in json.load(sys.stdin)["data"] if "numRecords" in n or "RunningJobs" in n))' || true)"
+          note "PostgreSQL" "$(docker exec bigdata-postgres psql -U bigdata_user -d bigdata -c 'SELECT COUNT(*), MAX(window_end) FROM ventas_por_producto' 2>&1)"
+          note "generator.out" "$(tail -30 generator.out 2>&1)"
+          note "api.out" "$(tail -30 api.out 2>&1)"
           docker compose logs --tail 150
-          echo "--- generator.out"; tail -50 generator.out || true
-          echo "--- api.out";       tail -50 api.out || true
