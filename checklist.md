@@ -6,7 +6,7 @@
   ```bash
   docker compose ps
   ```
-  Servicios esperados: `redpanda`, `prometheus`, `loki`, `grafana`, `flink-jobmanager`, `flink-taskmanager`, `postgres`, `promtail`
+  Servicios esperados: `redpanda`, `prometheus`, `loki`, `grafana`, `flink-jobmanager`, `flink-taskmanager`, `postgres`
 
 ---
 
@@ -47,10 +47,7 @@
   curl -s http://localhost:8083/taskmanagers | python3 -m json.tool
   ```
 
-- [ ] Job de procesamiento corriendo (con `flink_job.py` arrancado)
-  ```bash
-  curl -s http://localhost:8083/jobs | python3 -m json.tool
-  ```
+> `flink_job.py` es un consumidor Python y **no aparece** en `/jobs` de Flink. Para comprobar que corre, usar sus métricas (`curl -s http://localhost:8002/metrics | grep "^job_"`) o el target `flink_job` de Prometheus.
 
 ---
 
@@ -79,7 +76,7 @@
 
 ---
 
-## 5. Loki + Promtail
+## 5. Loki
 
 - [ ] Loki listo
   ```bash
@@ -87,7 +84,7 @@
   ```
   Esperado: `ready`
 
-- [ ] Logs llegando a Loki (con `generator.py` corriendo y `app.log` generado)
+- [ ] Logs llegando a Loki (con `generator.py` corriendo; los envía directamente a Loki)
   ```bash
   NOW=$(date +%s); HOUR_AGO=$((NOW - 3600))
   curl -s "http://localhost:3100/loki/api/v1/query_range?query=%7Bjob%3D%22python_generator%22%7D&start=${HOUR_AGO}000000000&end=${NOW}000000000&limit=5" \
@@ -187,7 +184,7 @@ histogram_quantile(0.95, rate(job_window_duration_seconds_bucket[5m]))
 | Mensajes consumidos por el job | Stat | `job_messages_consumed_total` |
 | Ventanas escritas en PostgreSQL | Stat | `job_windows_flushed_total` |
 | Errores de escritura en BD | Stat | `job_db_errors_total` |
-| Tasa producción vs consumo | Timeseries | `rate(app_requests_total[1m])` + `rate(job_messages_consumed_total[1m])` |
+| Tasa producción vs consumo | Timeseries | `sum(rate(app_requests_total[1m]))` + `rate(job_messages_consumed_total[1m])` |
 | Tasa errores HTTP 500 | Timeseries | `rate(app_requests_total{http_status="500"}[1m])` |
 | Transacciones por ventana de 30s | Timeseries | `job_last_window_transactions` |
 | Duración real de ventana | Timeseries | `histogram_quantile(0.50/0.95, ...)` |

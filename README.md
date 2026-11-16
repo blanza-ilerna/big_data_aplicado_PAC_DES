@@ -11,14 +11,13 @@ Implementa un pipeline de datos en tiempo real completo: ingesta de eventos, pro
 ```
 [generator.py]
      │
-     ├──► Redpanda (Kafka) ──► Apache Flink ──► PostgreSQL
-     │         (ventas_topic)    (flink_job.py)
      │
-     ├──► Prometheus (métricas :8000)
+     ├──► Redpanda (Kafka) ──► flink_job.py ──► PostgreSQL ──► api.py (FastAPI)
+     │         (ventas_topic)   (ventanas 30 s)
      │
-     └──► Loki (logs via Promtail)
-                │
-                └──► Grafana (dashboards)
+     ├──► Prometheus (métricas :8000 y :8002) ──┐
+     │                                          ├──► Grafana (dashboards)
+     └──► Loki (logs, push directo) ────────────┘
 ```
 
 ### Componentes
@@ -26,16 +25,15 @@ Implementa un pipeline de datos en tiempo real completo: ingesta de eventos, pro
 | Servicio | Rol | Puerto |
 |---|---|---|
 | **Redpanda** | Broker de mensajería (Kafka-compatible) | `19092` (Kafka), `8081` (Schema Registry), `8082` (REST Proxy) |
-| **Apache Flink** | Procesamiento distribuido en tiempo real | `8083` (UI) |
+| **Apache Flink** | Clúster de procesamiento (disponible, ver nota) | `8083` (UI) |
 | **PostgreSQL** | Almacenamiento de resultados | `5432` |
 | **Prometheus** | Recolección de métricas | `9090` |
 | **Loki** | Agregación de logs | `3100` |
-| **Promtail** | Agente de logs → Loki | — |
 | **Grafana** | Visualización de métricas y logs | `3000` |
 
 #### Redpanda
 
-Redpanda es un broker de mensajería compatible con la API de Apache Kafka, pero implementado en C++ sin depender de la JVM. En este proyecto actúa como bus central de eventos: el generador publica mensajes en el topic `ventas_topic` y Flink los consume para su procesamiento.
+Redpanda es un broker de mensajería compatible con la API de Apache Kafka, pero implementado en C++ sin depender de la JVM. En este proyecto actúa como bus central de eventos: el generador publica mensajes en el topic `ventas_topic` y `flink_job.py` los consume para su procesamiento.
 
 Expone tres interfaces:
 - **`:19092`** — Kafka API, usada por productores y consumidores.
@@ -49,29 +47,29 @@ Apache Flink es el motor de procesamiento distribuido en tiempo real. Se desplie
 - **JobManager** — coordina la ejecución de los jobs, gestiona el estado y expone la UI web en `:8083`.
 - **TaskManager** — ejecuta las tareas del job. Está configurado con 2 slots en paralelo.
 
-El job de procesamiento se define en `scripts/flink_job.py`. Flink expone métricas en el rango de puertos `9250-9260`, que Prometheus recoge automáticamente.
+> **Nota:** `scripts/flink_job.py` **no se ejecuta dentro del clúster Flink**: es un consumidor Python (`kafka-python`) que implementa a mano una ventana *tumbling* de 30 s y se lanza desde la terminal. El clúster Flink está levantado para explorarlo desde su UI, pero no recibe ningún job ni expone métricas a Prometheus.
 
 #### PostgreSQL
 
-Base de datos relacional donde se persisten los resultados del procesamiento de Flink. Se utiliza la imagen Alpine para reducir el tamaño. Los datos se guardan en un volumen Docker (`postgres_data`) para que persistan entre reinicios del Codespace.
+Base de datos relacional donde se persisten los resultados de `flink_job.py`. Se utiliza la imagen Alpine para reducir el tamaño. Los datos se guardan en un volumen Docker (`postgres_data`) para que persistan entre reinicios del Codespace.
 
 #### Prometheus
 
 Sistema de monitorización que recoge métricas de todos los servicios mediante scraping HTTP. Está configurado para consultar cada 15 segundos los siguientes targets:
 
 - `redpanda:9644` — métricas del broker.
-- `flink-jobmanager:9250` — métricas del clúster Flink.
 - `host.docker.internal:8000` — métricas expuestas por `generator.py`.
+- `host.docker.internal:8002` — métricas expuestas por `flink_job.py`.
+
+Los scripts Python corren en el devcontainer, que usa la red del host (`--network=host` en `devcontainer.json`). Por eso Prometheus los alcanza a través de `host.docker.internal` y los scripts alcanzan los servicios en `localhost`.
+
+La configuración de Prometheus, de los datasources de Grafana y del dashboard se genera dentro de cada contenedor desde `docker-compose.yml` (bloques `entrypoint`). No se usan *bind mounts* porque en Codespaces el daemon Docker no ve la carpeta del workspace en la misma ruta. **Para modificar el dashboard, editar el JSON dentro de `docker-compose.yml` y subir su `version`.**
 
 Las métricas se almacenan durante 1 día en el volumen `prometheus_data`.
 
 #### Loki
 
-Loki es el sistema de agregación de logs, diseñado para integrarse con Grafana. A diferencia de otras soluciones, no indexa el contenido de los logs sino sus etiquetas, lo que lo hace muy eficiente en almacenamiento. Recibe los logs de Promtail y los sirve a Grafana para su consulta con el lenguaje LogQL.
-
-#### Promtail
-
-Agente que monitoriza el archivo `app.log` generado por `generator.py` y lo envía a Loki en tiempo real. Los logs se formatean en JSON estructurado para que Loki pueda filtrar por campos como `level`, `user_id` o `product`.
+Loki es el sistema de agregación de logs, diseñado para integrarse con Grafana. A diferencia de otras soluciones, no indexa el contenido de los logs sino sus etiquetas, lo que lo hace muy eficiente en almacenamiento. `generator.py` envía sus logs directamente a la API de Loki (`/loki/api/v1/push`) con las etiquetas `job="python_generator"` y `level`. Los logs van en JSON estructurado, así que en LogQL se pueden filtrar campos como `user_id` o `product` con `| json`. Además se escriben en `app.log` en el directorio desde el que se lanza el script.
 
 #### Grafana
 
@@ -178,7 +176,7 @@ echo $CODESPACE_NAME
 | **API REST** | `8001` | Endpoints de consulta + Swagger en `/docs` |
 | **Flink UI** | `8083` | Estado del clúster Flink |
 | **Prometheus** | `9090` | Explorador de métricas (PromQL) |
-| **Redpanda Console** | `8082` | REST Proxy del broker |
+| **Redpanda REST Proxy** | `8082` | API HTTP del broker (no es una consola web) |
 
 > **Nota:** Los puertos son **privados por defecto** — solo accesibles con la sesión de GitHub activa. Para hacerlos públicos, ir a la pestaña **Ports** del terminal, clic derecho sobre el puerto → **Port Visibility → Public**.
 
@@ -194,23 +192,11 @@ echo $CODESPACE_NAME
 │   ├── Dockerfile              # Imagen con Docker CLI instalado
 │   ├── devcontainer.json       # Configuración de GitHub Codespaces
 │   └── start.sh                # Script de arranque (chmod socket + docker compose up)
-├── config/
-│   ├── prometheus/
-│   │   └── prometheus.yml      # Targets de scraping de Prometheus
-│   ├── promtail/
-│   │   └── config.yml          # Ruta de logs hacia Loki
-│   └── grafana/
-│       └── provisioning/
-│           ├── datasources/
-│           │   └── datasources.yml   # Prometheus + Loki (auto-provisionados)
-│           └── dashboards/
-│               ├── provider.yml      # Proveedor de dashboards
-│               └── pipeline.json     # Dashboard "ILERNA - Big Data Aplicado"
 ├── scripts/
 │   ├── generator.py            # Simulador de eventos (Redpanda + Prometheus + Loki)
 │   ├── flink_job.py            # Job de procesamiento con ventanas de 30 s
 │   └── api.py                  # API REST FastAPI sobre PostgreSQL
-├── docker-compose.yml          # Definición de servicios
+├── docker-compose.yml          # Servicios + config de Prometheus y Grafana (inline)
 └── requirements.txt            # Dependencias Python
 ```
 

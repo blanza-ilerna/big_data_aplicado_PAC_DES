@@ -22,7 +22,7 @@ services:
     volumes:
       - redpanda_data:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy'"]
+      test: ["CMD-SHELL", "rpk cluster health | grep -Eq 'Healthy:[[:space:]]+true'"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -154,7 +154,7 @@ services:
           "tags": ["bigdata", "pipeline"],
           "timezone": "browser",
           "schemaVersion": 36,
-          "version": 1,
+          "version": 2,
           "refresh": "15s",
           "panels": [
             {
@@ -205,7 +205,7 @@ services:
               "datasource": { "type": "prometheus", "uid": "prometheus" },
               "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
               "targets": [
-                { "expr": "rate(app_requests_total[1m])", "legendFormat": "Generado" },
+                { "expr": "sum(rate(app_requests_total[1m]))", "legendFormat": "Generado" },
                 { "expr": "rate(job_messages_consumed_total[1m])", "legendFormat": "Consumido por job" }
               ]
             },
@@ -334,41 +334,6 @@ services:
     networks:
       - bigdata-network
 
-  promtail:
-    image: grafana/promtail:2.9.3
-    container_name: bigdata-promtail
-    restart: unless-stopped
-    volumes:
-      - .:/var/log/app:ro
-      - promtail_positions:/tmp/positions
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        cat > /tmp/promtail.yml << 'EOF'
-        server:
-          http_listen_port: 9080
-          grpc_listen_port: 0
-        positions:
-          filename: /tmp/positions.yaml
-        clients:
-          - url: http://loki:3100/loki/api/v1/push
-        scrape_configs:
-          - job_name: local_app_logs
-            static_configs:
-              - targets:
-                  - localhost
-                labels:
-                  job: python_generator
-                  __path__: /var/log/app/app.log
-        EOF
-        exec /usr/bin/promtail -config.file=/tmp/promtail.yml
-    depends_on:
-      loki:
-        condition: service_healthy
-    networks:
-      - bigdata-network
-
 volumes:
   redpanda_data:
   prometheus_data:
@@ -377,7 +342,6 @@ volumes:
   flink_jobmanager_data:
   flink_taskmanager_data:
   postgres_data:
-  promtail_positions:
 
 networks:
   bigdata-network:

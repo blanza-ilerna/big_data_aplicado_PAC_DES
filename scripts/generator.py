@@ -12,11 +12,11 @@ from prometheus_client import start_http_server, Counter
 from pythonjsonlogger import jsonlogger
 
 
-# --- LOKI HANDLER (push directo, sin promtail) ---
+# --- LOKI HANDLER (push directo a Loki, sin Promtail) ---
 class LokiHandler(logging.Handler):
-    def __init__(self, url="http://localhost:3100/loki/api/v1/push"):
+    def __init__(self, url=None):
         super().__init__()
-        self.url = url
+        self.url = url or os.getenv('LOKI_URL', 'http://localhost:3100/loki/api/v1/push')
 
     def emit(self, record):
         try:
