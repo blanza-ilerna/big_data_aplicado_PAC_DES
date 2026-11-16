@@ -15,6 +15,10 @@ RUN mvn -q -B -f /build/pom.xml dependency:copy-dependencies \
 # La imagen base usa Ubuntu 24.04 (noble) -> Python 3.12, soportado por PyFlink 2.2
 FROM flink:2.2.1-scala_2.12-java17
 
+# La imagen de Flink 2.x termina con USER flink: para instalar hace falta root.
+# Al final se vuelve a USER flink, como en la imagen original.
+USER root
+
 RUN apt-get update -y \
     && apt-get install -y --no-install-recommends python3 python3-venv curl procps \
     && rm -rf /var/lib/apt/lists/*
@@ -47,3 +51,5 @@ RUN if ! ls /opt/flink/plugins/metrics-prometheus/*.jar >/dev/null 2>&1; then \
 # aquí con dueño flink, el volumen nuevo hereda esos permisos.
 RUN mkdir -p /opt/flink/usrlib /opt/flink/checkpoints/checkpoints /opt/flink/checkpoints/savepoints \
     && chown -R flink:flink /opt/flink/usrlib /opt/flink/checkpoints
+
+USER flink
