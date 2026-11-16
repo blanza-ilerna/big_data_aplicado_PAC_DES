@@ -21,8 +21,16 @@ RUN apt-get update -y \
 
 # Python 3.12 de Ubuntu no permite `pip install` en el sistema (PEP 668): venv propio.
 # El PATH hace que `python` sea el del venv, también en `docker exec ... flink run -py`.
-RUN python3 -m venv /opt/pyflink \
-    && /opt/pyflink/bin/pip install --no-cache-dir apache-flink==2.2.1
+# Algunas dependencias de PyFlink (p. ej. crcmod, que usa apache-beam) solo se
+# publican como código fuente: se instala el compilador para el pip y se quita después.
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends build-essential python3-dev \
+    && python3 -m venv /opt/pyflink \
+    && /opt/pyflink/bin/pip install --no-cache-dir apache-flink==2.2.1 \
+    && /opt/pyflink/bin/python -c "import pyflink, pemja; print('PyFlink', pyflink.__file__)" \
+    && apt-get purge -y build-essential python3-dev \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 ENV PATH=/opt/pyflink/bin:$PATH
 
 # Conectores en lib/ para que los vean el JobManager, el TaskManager y el cliente `flink run`

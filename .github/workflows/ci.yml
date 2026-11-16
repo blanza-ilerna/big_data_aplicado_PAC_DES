@@ -47,8 +47,13 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt
 
-      - name: Construir y levantar servicios
-        run: docker compose up -d --build
+      - name: Construir imágenes
+        run: |
+          set -o pipefail
+          docker compose build --progress=plain 2>&1 | tee build.log
+
+      - name: Levantar servicios
+        run: docker compose up -d
 
       - name: Topic, tablas y job de Flink
         run: |
@@ -76,6 +81,9 @@ jobs:
             msg=$(printf '%s' "$2" | tail -c 3500 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
             echo "::warning title=$1::$msg"
           }
+          if [ -f build.log ] && grep -qiE "error|failed" build.log; then
+            note "Build (errores)" "$(grep -iE -B3 -A12 'error|failed' build.log | tail -c 3500)"
+          fi
           note "docker compose ps" "$(docker compose ps -a --format 'table {{.Service}}\t{{.State}}\t{{.Status}}')"
           note "Flink jobs" "$(curl -s localhost:8083/jobs/overview || true)"
           note "Flink JobManager (errores)" "$(docker logs bigdata-flink-jobmanager 2>&1 | grep -iE 'exception|error|caused by' | tail -40)"
@@ -84,6 +92,7 @@ jobs:
           note "Prometheus targets" "$(curl -s localhost:9090/api/v1/targets | python3 -c 'import json,sys;[print(t["labels"]["job"],t["scrapeUrl"],t["health"],t.get("lastError","")) for t in json.load(sys.stdin)["data"]["activeTargets"]]' || true)"
           note "Métricas Flink disponibles" "$(curl -s 'localhost:9090/api/v1/label/__name__/values' | python3 -c 'import json,sys;print(chr(10).join(n for n in json.load(sys.stdin)["data"] if "numRecords" in n or "RunningJobs" in n))' || true)"
           note "PostgreSQL" "$(docker exec bigdata-postgres psql -U bigdata_user -d bigdata -c 'SELECT COUNT(*), MAX(window_end) FROM ventas_por_producto' 2>&1)"
+          note "Contenedores que no arrancan (logs)" "$(for c in $(docker compose ps -a --status exited --status restarting -q); do echo "== $(docker inspect -f '{{.Name}}' $c)"; docker logs --tail 25 $c 2>&1; done)"
           note "generator.out" "$(tail -30 generator.out 2>&1)"
           note "api.out" "$(tail -30 api.out 2>&1)"
           docker compose logs --tail 150
