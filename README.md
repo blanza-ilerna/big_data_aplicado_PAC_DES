@@ -96,7 +96,7 @@ Trae dos **alertas** provisionadas (`docker/grafana/provisioning/alerting/rules.
 - **Job de Flink caído:** no hay ningún job en ejecución durante 2 minutos.
 - **Sin ventanas nuevas en PostgreSQL:** la última ventana tiene más de 3 minutos.
 
-Las alertas se ven en la UI con su estado (*Normal*, *Pending*, *Firing*), pero **no envían avisos**: no hay servidor de correo, así que `alerting/notifications.yml` las silencia con el *mute timing* `siempre` (así Grafana no llena el log de errores `SMTP not configured`). Para recibir avisos, crea un *contact point* (Slack, Discord, email...), ponlo como `receiver` en ese archivo y quita `mute_time_intervals`.
+Las alertas se ven en la UI con su estado (*Normal*, *Pending*, *Firing*), pero **no envían avisos**: no hay servidor de correo, así que `alerting/notifications.yml` las silencia con el *mute timing* `siempre` (así Grafana no llena el log de errores `SMTP not configured`). Para recibir avisos, cambia en ese archivo el *contact point* `sin-avisos` por uno real (Slack, Discord, email...) y quita `mute_time_intervals`.
 
 ### Versiones
 

@@ -6,9 +6,22 @@
 # Alerting -> Alert rules con su estado (Normal / Pending / Firing), pero no se
 # envía nada.
 #
-# Para recibir avisos de verdad: crea un contact point (Slack, Discord, email con
-# SMTP...), ponlo como "receiver" abajo y quita "mute_time_intervals".
+# Para recibir avisos de verdad: cambia el contact point "sin-avisos" por uno real
+# (Slack, Discord, email con SMTP...) y quita "mute_time_intervals" de la ruta.
 apiVersion: 1
+
+# Contact point propio: las políticas no pueden apuntar a "grafana-default-email"
+# porque en Grafana 13 todavía no existe cuando se cargan estos archivos.
+# Nunca recibe nada mientras la ruta esté silenciada.
+contactPoints:
+  - orgId: 1
+    name: sin-avisos
+    receivers:
+      - uid: sin-avisos-webhook
+        type: webhook
+        settings:
+          url: http://localhost:9/sin-avisos
+        disableResolveMessage: true
 
 muteTimes:
   - orgId: 1
@@ -20,11 +33,11 @@ muteTimes:
 
 policies:
   - orgId: 1
-    receiver: grafana-default-email
+    receiver: sin-avisos
     group_by: ["grafana_folder", "alertname"]
     routes:
       # Todas las reglas del pipeline llevan la etiqueta "severity"
-      - receiver: grafana-default-email
+      - receiver: sin-avisos
         object_matchers:
           - ["severity", "=~", ".+"]
         mute_time_intervals:
