@@ -17,7 +17,20 @@
       ]
     }
   },
-  "forwardPorts": [3000, 8083, 8081, 8082, 9090, 5432, 8000, 8001, 8002, 3100],
+  "forwardPorts": [3000, 8084, 8083, 8001, 9090, 8000, 8002, 8081, 8082, 5432, 3100],
+  "portsAttributes": {
+    "3000": { "label": "Grafana", "onAutoForward": "notify" },
+    "8084": { "label": "Redpanda Console" },
+    "8083": { "label": "Flink UI" },
+    "8001": { "label": "API REST (FastAPI)" },
+    "9090": { "label": "Prometheus" },
+    "8000": { "label": "Métricas generator.py", "onAutoForward": "silent" },
+    "8002": { "label": "Métricas plan B", "onAutoForward": "silent" },
+    "8081": { "label": "Schema Registry", "onAutoForward": "silent" },
+    "8082": { "label": "Redpanda REST Proxy", "onAutoForward": "silent" },
+    "5432": { "label": "PostgreSQL", "onAutoForward": "silent" },
+    "3100": { "label": "Loki", "onAutoForward": "silent" }
+  },
   "postCreateCommand": "pip install -r requirements.txt",
   "postStartCommand": "bash .devcontainer/start.sh"
 }

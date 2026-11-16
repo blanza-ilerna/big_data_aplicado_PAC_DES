@@ -22,12 +22,14 @@ datasources:
     type: postgres
     access: proxy
     url: postgres:5432
-    user: bigdata_user
+    # Grafana sustituye $VARIABLE por las variables de entorno del contenedor
+    # (definidas en docker-compose.yml a partir de .env)
+    user: $POSTGRES_USER
     jsonData:
-      database: bigdata
+      database: $POSTGRES_DB
       sslmode: disable
       postgresVersion: 1500
       timescaledb: false
     secureJsonData:
-      password: bigdata_pass
+      password: $POSTGRES_PASSWORD
     editable: true

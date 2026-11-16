@@ -60,6 +60,8 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 
 
 def init_db(conn):
+    # Las tablas "oficiales" (con claves únicas) las crea sql/schema.sql; esto es solo
+    # por si se ejecuta el plan B sin haber lanzado antes scripts/init_infra.sh.
     with conn.cursor() as cur:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS ventas_por_producto (
@@ -102,6 +104,7 @@ def flush_window(conn, window_start, window_end, by_product, by_user):
                 INSERT INTO ventas_por_producto
                     (window_start, window_end, product, total_amount, num_transactions, avg_amount)
                 VALUES %s
+                ON CONFLICT DO NOTHING
             """, rows_product)
 
         if by_user:
@@ -114,6 +117,7 @@ def flush_window(conn, window_start, window_end, by_product, by_user):
                 INSERT INTO ventas_por_usuario
                     (window_start, window_end, user_id, total_amount, num_transactions)
                 VALUES %s
+                ON CONFLICT DO NOTHING
             """, rows_user)
 
         conn.commit()

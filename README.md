@@ -26,11 +26,12 @@ Implementa un pipeline de datos en tiempo real completo: ingesta de eventos, pro
 | Servicio | Rol | Puerto |
 |---|---|---|
 | **Redpanda** | Broker de mensajería (Kafka-compatible) | `19092` (Kafka), `8081` (Schema Registry), `8082` (REST Proxy) |
+| **Redpanda Console** | Interfaz web del broker: topics, mensajes, consumer groups | `8084` |
 | **Apache Flink** | Procesamiento en streaming (job PyFlink) | `8083` (UI) |
 | **PostgreSQL** | Almacenamiento de resultados | `5432` |
 | **Prometheus** | Recolección de métricas | `9090` |
 | **Loki** | Agregación de logs | `3100` |
-| **Grafana** | Visualización de métricas y logs | `3000` |
+| **Grafana** | Visualización de métricas, resultados, logs y alertas | `3000` |
 
 #### Redpanda
 
@@ -40,6 +41,8 @@ Expone tres interfaces:
 - **`:19092`** — Kafka API, usada por productores y consumidores.
 - **`:8081`** — Schema Registry, para registrar y validar esquemas de mensajes.
 - **`:8082`** — REST Proxy, para interactuar con el broker vía HTTP.
+
+**Redpanda Console** (`:8084`) permite ver los mensajes de `ventas_topic` y el consumer group `flink-ventas` con su *lag* (mensajes pendientes de procesar).
 
 #### Apache Flink
 
@@ -52,10 +55,13 @@ El job está en `scripts/flink_job.py` y usa **PyFlink** (Table API + SQL):
 
 - **Origen:** tabla `kafka_ventas` sobre `ventas_topic` (formato JSON). El tiempo de evento es el campo `timestamp` de cada mensaje, con una marca de agua (*watermark*) de 5 s.
 - **Procesamiento:** ventanas *tumbling* de 30 s (`TUMBLE(...)`) agrupadas por producto y por usuario.
-- **Destino:** tablas `ventas_por_producto` y `ventas_por_usuario` de PostgreSQL (conector JDBC).
-- **Tolerancia a fallos:** *checkpoint* cada 30 s. Los offsets se guardan en el consumer group `flink-ventas`, así que al relanzar el job continúa donde lo dejó.
+- **Destino:** tablas `ventas_por_producto` y `ventas_por_usuario` de PostgreSQL (conector JDBC en modo **upsert**: `INSERT ... ON CONFLICT DO UPDATE` sobre la clave `(window_start, product)` o `(window_start, user_id)`).
+- **Tolerancia a fallos:** *checkpoint* cada 30 s en el volumen `flink_checkpoints`, compartido por el JobManager y el TaskManager. Los offsets se confirman en el consumer group `flink-ventas`.
+- **Sin duplicados:** si el job se relanza y reprocesa mensajes, el upsert sobrescribe la ventana en lugar de duplicarla.
 
 La imagen de Flink se construye desde `docker/flink/Dockerfile` (Flink 1.18.1 + PyFlink + conectores Kafka y JDBC). El job **no se ejecuta con `python3`**: se envía al clúster con `bash scripts/submit_flink_job.sh`, y después aparece en la UI de Flink (`:8083`). Flink expone métricas en el puerto `9249` del JobManager y del TaskManager.
+
+Al arrancar el Codespace, `start.sh` envía el job automáticamente si no está en ejecución (al parar el Codespace, el job se pierde con el reinicio del JobManager).
 
 `scripts/python_consumer.py` es el **plan B** sin Flink (el consumidor Python original). Úsalo solo si el clúster no funciona y nunca a la vez que el job, porque los dos escriben en las mismas tablas.
 
@@ -84,7 +90,13 @@ Loki es el sistema de agregación de logs, diseñado para integrarse con Grafana
 
 #### Grafana
 
-Plataforma de visualización que centraliza métricas (Prometheus), logs (Loki) y los resultados del job (PostgreSQL) en un dashboard. Está configurada con acceso anónimo en rol Admin para facilitar el uso en el entorno de desarrollo. Permite crear alertas, explorar logs con LogQL y métricas con PromQL.
+Plataforma de visualización que centraliza métricas (Prometheus), logs (Loki) y los resultados del job (PostgreSQL) en un dashboard. Está configurada con acceso anónimo en rol Admin para facilitar el uso en el entorno de desarrollo (se puede cambiar a `Viewer` en `.env`).
+
+Trae dos **alertas** provisionadas (`docker/grafana/provisioning/alerting/rules.yml`), visibles en *Alerting → Alert rules*:
+- **Job de Flink caído:** no hay ningún job en ejecución durante 2 minutos.
+- **Sin ventanas nuevas en PostgreSQL:** la última ventana tiene más de 3 minutos.
+
+No hay ningún *contact point* configurado: las alertas se ven en la UI pero no envían avisos.
 
 ---
 
@@ -96,7 +108,7 @@ Desde GitHub, pulsar **Code → Codespaces → Create codespace on main**.
 
 El entorno se configura automáticamente:
 - `postCreateCommand` — instala las dependencias Python (`pip install -r requirements.txt`)
-- `postStartCommand` — ejecuta `.devcontainer/start.sh`, que ajusta los permisos del socket Docker, construye las imágenes y lanza los servicios (`docker compose up -d --build`), y crea el topic y las tablas (`scripts/init_infra.sh`)
+- `postStartCommand` — ejecuta `.devcontainer/start.sh`, que ajusta los permisos del socket Docker, construye las imágenes y lanza los servicios (`docker compose up -d --build`), crea el topic y las tablas (`scripts/init_infra.sh`) y envía el job de Flink (`scripts/submit_flink_job.sh`)
 
 La primera vez tarda varios minutos, porque la imagen de Flink instala PyFlink.
 
@@ -118,13 +130,14 @@ curl -s http://localhost:9090/api/v1/targets | python3 -m json.tool | grep -E '"
 
 ### 3. Ejecutar el pipeline de datos
 
-**Paso 1 — Enviar el job a Flink** (una sola vez; sigue corriendo en el clúster):
+**Job de Flink:** `start.sh` ya lo envía al arrancar. Para gestionarlo a mano:
 ```bash
-bash scripts/submit_flink_job.sh            # no hace nada si ya está en ejecución
-bash scripts/submit_flink_job.sh --restart  # tras modificar flink_job.py
-bash scripts/submit_flink_job.sh --cancel   # pararlo
+bash scripts/submit_flink_job.sh                 # lo lanza si no está en ejecución
+bash scripts/submit_flink_job.sh --restart       # tras modificar flink_job.py (con savepoint)
+bash scripts/submit_flink_job.sh --restart-clean # si --restart falla por cambios grandes en el SQL
+bash scripts/submit_flink_job.sh --cancel        # pararlo (toma un savepoint)
 ```
-Consume de Redpanda, agrega por ventanas de 30 s y escribe en PostgreSQL.
+Consume de Redpanda, agrega por ventanas de 30 s y escribe en PostgreSQL. `--restart` toma un *savepoint* (una foto del estado del job), lo para y lo relanza desde él, así que no se pierden las ventanas a medio calcular.
 
 Los demás scripts se arrancan en terminales separadas (botón `+` del panel de terminales de VS Code):
 
@@ -134,18 +147,18 @@ python3 scripts/generator.py
 ```
 Simula compras, publica en Redpanda, expone métricas en `:8000` y envía sus logs a Loki.
 
-**Terminal 3 — API REST (opcional):**
+**Terminal 2 — API REST (opcional):**
 ```bash
 python3 scripts/api.py
 ```
-Sirve los resultados de PostgreSQL mediante FastAPI en `:8001`. Documentación interactiva en `http://localhost:8001/docs`.
+Sirve los resultados de PostgreSQL mediante FastAPI en `:8001`. Documentación interactiva en `http://localhost:8001/docs`. Usa un pool de conexiones y responde `503` si PostgreSQL no está disponible o las tablas aún no existen.
 
 #### Endpoints disponibles
 
 | Método | Ruta | Descripción |
 |---|---|---|
 | `GET` | `/health` | Estado del servidor y conexión a BD |
-| `GET` | `/ventas/global` | Resumen global: total de transacciones, importe y producto top |
+| `GET` | `/ventas/global` | Resumen global: nº de ventanas, transacciones, importe, ticket medio, última ventana y producto top |
 | `GET` | `/ventas/productos` | Ventas por producto por ventana (param: `product`, `limit`) |
 | `GET` | `/ventas/productos/resumen` | Agregado total por producto (todas las ventanas) |
 | `GET` | `/ventas/usuarios` | Ventas por usuario por ventana (param: `user_id`, `limit`) |
@@ -153,6 +166,14 @@ Sirve los resultados de PostgreSQL mediante FastAPI en `:8001`. Documentación i
 | `GET` | `/docs` | Swagger UI interactivo |
 
 ### 4. Verificar el flujo extremo a extremo
+
+La forma rápida es el script de comprobación, que revisa Flink, PostgreSQL (incluido que no haya ventanas duplicadas), Prometheus, cada panel de Grafana, las alertas, Loki, la API y Redpanda Console:
+
+```bash
+python3 tests/e2e_check.py
+```
+
+También se puede comprobar a mano:
 
 ```bash
 # Datos agregados en PostgreSQL
@@ -193,6 +214,7 @@ echo $CODESPACE_NAME
 | **API REST** | `8001` | Endpoints de consulta + Swagger en `/docs` |
 | **Flink UI** | `8083` | Estado del clúster Flink |
 | **Prometheus** | `9090` | Explorador de métricas (PromQL) |
+| **Redpanda Console** | `8084` | Topics, mensajes y consumer groups |
 | **Redpanda REST Proxy** | `8082` | API HTTP del broker (no es una consola web) |
 
 > **Nota:** Los puertos son **privados por defecto** — solo accesibles con la sesión de GitHub activa. Para hacerlos públicos, ir a la pestaña **Ports** del terminal, clic derecho sobre el puerto → **Port Visibility → Public**.
@@ -208,11 +230,11 @@ echo $CODESPACE_NAME
 ├── .devcontainer/
 │   ├── Dockerfile              # Imagen con Docker CLI instalado
 │   ├── devcontainer.json       # Configuración de GitHub Codespaces
-│   └── start.sh                # Script de arranque (chmod socket + docker compose up)
+│   └── start.sh                # Arranque: compose up, topic/tablas y envío del job
 ├── docker/
 │   ├── flink/Dockerfile        # Flink 1.18.1 + PyFlink + conectores Kafka/JDBC
 │   ├── prometheus/             # Imagen con prometheus.yml (targets)
-│   └── grafana/provisioning/   # Datasources (Prometheus, Loki, PostgreSQL) y dashboard
+│   └── grafana/provisioning/   # Datasources, dashboard y alertas
 ├── scripts/
 │   ├── generator.py            # Simulador de eventos (Redpanda + Prometheus + Loki)
 │   ├── flink_job.py            # Job PyFlink: ventanas de 30 s -> PostgreSQL
@@ -220,7 +242,10 @@ echo $CODESPACE_NAME
 │   ├── init_infra.sh           # Crea el topic y las tablas (idempotente)
 │   ├── python_consumer.py      # Plan B sin Flink (no usar a la vez que el job)
 │   └── api.py                  # API REST FastAPI sobre PostgreSQL
-├── sql/schema.sql              # Tablas de resultados
+├── sql/schema.sql              # Tablas de resultados (con claves únicas)
+├── tests/e2e_check.py          # Comprobación extremo a extremo
+├── .github/workflows/ci.yml    # CI: comprobaciones estáticas + e2e con todo el stack
+├── .env.example                # Credenciales (copiar a .env para cambiarlas)
 ├── docker-compose.yml          # Definición de servicios
 └── requirements.txt            # Dependencias Python
 ```
@@ -237,12 +262,14 @@ echo $CODESPACE_NAME
 | Usuario | `bigdata_user` |
 | Contraseña | `bigdata_pass` |
 
+Son los valores por defecto. Para cambiarlos, copia `.env.example` a `.env` (no se sube a git) y lee las notas de ese archivo.
+
 ---
 
 ## Dependencias Python
 
 ```
-kafka-python==2.0.2
+kafka-python==2.3.3
 prometheus_client==0.20.0
 psycopg2-binary==2.9.9
 python-json-logger==2.0.7
@@ -257,3 +284,12 @@ En Codespaces se instalan automáticamente al crear el entorno. Instalación man
 ```bash
 pip install -r requirements.txt
 ```
+
+---
+
+## Integración continua
+
+`.github/workflows/ci.yml` se ejecuta en cada push:
+
+1. **static** — compila los scripts Python, revisa la sintaxis de los `.sh`, valida JSON/YAML y `docker compose config`.
+2. **e2e** — levanta todo el stack en el runner de GitHub, envía el job, arranca el generador y la API, y ejecuta `tests/e2e_check.py`. Después relanza el job con `--restart` y vuelve a comprobar que no hay ventanas duplicadas. Tarda unos 10-15 minutos.

@@ -1,14 +1,20 @@
 import os
+import threading
+from contextlib import contextmanager
 from typing import Optional
+
 import psycopg2
+import psycopg2.errors
 import psycopg2.extras
+import psycopg2.pool
 import uvicorn
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 app = FastAPI(
     title="Big Data Aplicado — API",
     description="API REST sobre los resultados procesados por el pipeline de streaming.",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 DB = {
@@ -17,11 +23,64 @@ DB = {
     'dbname':   os.getenv('POSTGRES_DB',       'bigdata'),
     'user':     os.getenv('POSTGRES_USER',     'bigdata_user'),
     'password': os.getenv('POSTGRES_PASSWORD', 'bigdata_pass'),
+    'connect_timeout': 5,
 }
 
+# ---------------------------------------------------------------------------
+# Pool de conexiones
+# ---------------------------------------------------------------------------
+# FastAPI ejecuta los endpoints síncronos en varios hilos, por eso un pool
+# "Threaded". Se crea en la primera petición: la API arranca aunque PostgreSQL
+# todavía no esté listo.
+_pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
+_pool_lock = threading.Lock()
 
-def get_conn():
-    return psycopg2.connect(**DB)
+
+def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = psycopg2.pool.ThreadedConnectionPool(minconn=1, maxconn=10, **DB)
+        return _pool
+
+
+@contextmanager
+def db_cursor():
+    """Cursor de diccionarios; la conexión vuelve siempre al pool (o se descarta si se rompió)."""
+    pool = get_pool()
+    conn = pool.getconn()
+    broken = False
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            yield cur
+        conn.commit()
+    except psycopg2.OperationalError:
+        broken = True          # p. ej. PostgreSQL reiniciado: no reutilizar esta conexión
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        pool.putconn(conn, close=broken or conn.closed != 0)
+
+
+@app.exception_handler(psycopg2.OperationalError)
+def db_unavailable(_: Request, exc: psycopg2.OperationalError):
+    return JSONResponse(status_code=503, content={"detail": "Base de datos no disponible", "error": str(exc).strip()})
+
+
+@app.exception_handler(psycopg2.errors.UndefinedTable)
+def tables_missing(_: Request, exc: psycopg2.Error):
+    return JSONResponse(status_code=503, content={
+        "detail": "Las tablas aún no existen: ejecuta `bash scripts/init_infra.sh`",
+        "error": str(exc).strip(),
+    })
+
+
+def fetch_all(sql: str, params=()) -> list:
+    with db_cursor() as cur:
+        cur.execute(sql, params)
+        return [dict(r) for r in cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -31,11 +90,11 @@ def get_conn():
 @app.get("/health", tags=["Sistema"])
 def health():
     try:
-        conn = get_conn()
-        conn.close()
+        with db_cursor() as cur:
+            cur.execute("SELECT 1")
         return {"status": "ok", "database": "connected"}
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
+    except psycopg2.Error as e:
+        raise HTTPException(status_code=503, detail=str(e).strip())
 
 
 # ---------------------------------------------------------------------------
@@ -47,46 +106,27 @@ def ventas_por_producto(
     product: Optional[str] = Query(None, description="Filtrar por producto"),
     limit: int = Query(50, ge=1, le=500),
 ):
-    conn = get_conn()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        if product:
-            cur.execute("""
-                SELECT window_start, window_end, product,
-                       total_amount, num_transactions, avg_amount
-                FROM ventas_por_producto
-                WHERE product = %s
-                ORDER BY window_end DESC
-                LIMIT %s
-            """, (product, limit))
-        else:
-            cur.execute("""
-                SELECT window_start, window_end, product,
-                       total_amount, num_transactions, avg_amount
-                FROM ventas_por_producto
-                ORDER BY window_end DESC
-                LIMIT %s
-            """, (limit,))
-        rows = cur.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    return fetch_all("""
+        SELECT window_start, window_end, product,
+               total_amount, num_transactions, avg_amount
+        FROM ventas_por_producto
+        WHERE (%(product)s::text IS NULL OR product = %(product)s)
+        ORDER BY window_end DESC
+        LIMIT %(limit)s
+    """, {"product": product, "limit": limit})
 
 
 @app.get("/ventas/productos/resumen", tags=["Ventas"])
 def resumen_por_producto():
-    conn = get_conn()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            SELECT product,
-                   SUM(total_amount)     AS total_amount,
-                   SUM(num_transactions) AS num_transactions,
-                   ROUND(AVG(avg_amount)::numeric, 2) AS avg_amount
-            FROM ventas_por_producto
-            GROUP BY product
-            ORDER BY total_amount DESC
-        """)
-        rows = cur.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    return fetch_all("""
+        SELECT product,
+               SUM(total_amount)     AS total_amount,
+               SUM(num_transactions) AS num_transactions,
+               ROUND(SUM(total_amount) / NULLIF(SUM(num_transactions), 0), 2) AS avg_amount
+        FROM ventas_por_producto
+        GROUP BY product
+        ORDER BY total_amount DESC
+    """)
 
 
 # ---------------------------------------------------------------------------
@@ -98,45 +138,26 @@ def ventas_por_usuario(
     user_id: Optional[str] = Query(None, description="Filtrar por usuario"),
     limit: int = Query(50, ge=1, le=500),
 ):
-    conn = get_conn()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        if user_id:
-            cur.execute("""
-                SELECT window_start, window_end, user_id,
-                       total_amount, num_transactions
-                FROM ventas_por_usuario
-                WHERE user_id = %s
-                ORDER BY window_end DESC
-                LIMIT %s
-            """, (user_id, limit))
-        else:
-            cur.execute("""
-                SELECT window_start, window_end, user_id,
-                       total_amount, num_transactions
-                FROM ventas_por_usuario
-                ORDER BY window_end DESC
-                LIMIT %s
-            """, (limit,))
-        rows = cur.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    return fetch_all("""
+        SELECT window_start, window_end, user_id,
+               total_amount, num_transactions
+        FROM ventas_por_usuario
+        WHERE (%(user_id)s::text IS NULL OR user_id = %(user_id)s)
+        ORDER BY window_end DESC
+        LIMIT %(limit)s
+    """, {"user_id": user_id, "limit": limit})
 
 
 @app.get("/ventas/usuarios/resumen", tags=["Ventas"])
 def resumen_por_usuario():
-    conn = get_conn()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            SELECT user_id,
-                   SUM(total_amount)     AS total_amount,
-                   SUM(num_transactions) AS num_transactions
-            FROM ventas_por_usuario
-            GROUP BY user_id
-            ORDER BY total_amount DESC
-        """)
-        rows = cur.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    return fetch_all("""
+        SELECT user_id,
+               SUM(total_amount)     AS total_amount,
+               SUM(num_transactions) AS num_transactions
+        FROM ventas_por_usuario
+        GROUP BY user_id
+        ORDER BY total_amount DESC
+    """)
 
 
 # ---------------------------------------------------------------------------
@@ -145,13 +166,13 @@ def resumen_por_usuario():
 
 @app.get("/ventas/global", tags=["Ventas"])
 def resumen_global():
-    conn = get_conn()
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with db_cursor() as cur:
         cur.execute("""
-            SELECT COUNT(*)               AS num_ventanas,
-                   SUM(num_transactions)  AS total_transacciones,
-                   SUM(total_amount)      AS total_importe,
-                   ROUND(AVG(avg_amount)::numeric, 2) AS media_por_transaccion
+            SELECT COUNT(DISTINCT window_start) AS num_ventanas,
+                   SUM(num_transactions)        AS total_transacciones,
+                   SUM(total_amount)            AS total_importe,
+                   ROUND(SUM(total_amount) / NULLIF(SUM(num_transactions), 0), 2) AS media_por_transaccion,
+                   MAX(window_end)              AS ultima_ventana
             FROM ventas_por_producto
         """)
         global_row = dict(cur.fetchone())
@@ -166,7 +187,6 @@ def resumen_global():
         top = cur.fetchone()
         global_row['top_producto'] = dict(top) if top else None
 
-    conn.close()
     return global_row
 
 

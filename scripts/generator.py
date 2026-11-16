@@ -5,6 +5,8 @@ import signal
 import sys
 import time
 import logging
+import logging.handlers
+import queue
 import urllib.request
 from datetime import datetime, timezone
 from kafka import KafkaProducer
@@ -14,11 +16,18 @@ from pythonjsonlogger import jsonlogger
 
 # --- LOKI HANDLER (push directo a Loki, sin Promtail) ---
 class LokiHandler(logging.Handler):
+    """Envía cada log a la API de Loki. Si Loki no responde, deja de intentarlo
+    durante RETRY_AFTER segundos para no acumular esperas."""
+    RETRY_AFTER = 30
+
     def __init__(self, url=None):
         super().__init__()
         self.url = url or os.getenv('LOKI_URL', 'http://localhost:3100/loki/api/v1/push')
+        self._down_until = 0.0
 
     def emit(self, record):
+        if time.monotonic() < self._down_until:
+            return  # Loki caído hace poco: se descarta (sigue en stdout y app.log)
         try:
             log_entry = self.format(record)
             ts_ns = str(int(record.created * 1_000_000_000))
@@ -36,7 +45,16 @@ class LokiHandler(logging.Handler):
             )
             urllib.request.urlopen(req, timeout=2)
         except Exception:
-            pass  # Loki no disponible: no interrumpir el generador
+            self._down_until = time.monotonic() + self.RETRY_AFTER
+
+
+class DropWhenFullQueueHandler(logging.handlers.QueueHandler):
+    """Si la cola está llena (Loki muy lento), descarta el log en vez de bloquear."""
+    def enqueue(self, record):
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            pass
 
 
 # --- LOGS (JSON estructurado) ---
@@ -44,10 +62,21 @@ handler_file = logging.FileHandler("app.log")
 handler_file.setFormatter(jsonlogger.JsonFormatter())
 handler_stdout = logging.StreamHandler(sys.stdout)
 handler_stdout.setFormatter(jsonlogger.JsonFormatter())
+
+# El envío HTTP a Loki se hace en un hilo aparte (QueueListener): el bucle del
+# generador nunca espera a la red.
 handler_loki = LokiHandler()
 handler_loki.setFormatter(jsonlogger.JsonFormatter())
+loki_queue = queue.Queue(maxsize=1000)
+loki_listener = logging.handlers.QueueListener(loki_queue, handler_loki)
+loki_listener.start()
+handler_queue = DropWhenFullQueueHandler(loki_queue)
+# QueueHandler formatea el mensaje antes de encolarlo: con "%(message)s" se deja tal cual
+# (sin esto, basicConfig le pone "INFO:nombre:mensaje"). El JSON lo genera handler_loki.
+handler_queue.setFormatter(logging.Formatter("%(message)s"))
 
-logging.basicConfig(level=logging.INFO, handlers=[handler_file, handler_stdout, handler_loki])
+logging.basicConfig(level=logging.INFO,
+                    handlers=[handler_file, handler_stdout, handler_queue])
 logger = logging.getLogger(__name__)
 
 # --- MÉTRICAS (Prometheus) ---
@@ -110,6 +139,7 @@ def generate_data():
     producer.flush()
     producer.close()
     logger.info("Generador detenido correctamente")
+    loki_listener.stop()  # vacía la cola de logs pendientes hacia Loki
 
 if __name__ == '__main__':
     logger.info("Generador iniciado", extra={"broker": KAFKA_BOOTSTRAP})

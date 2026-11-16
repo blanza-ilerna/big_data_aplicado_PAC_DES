@@ -25,5 +25,8 @@ RUN if ! ls /opt/flink/plugins/metrics-prometheus/*.jar >/dev/null 2>&1; then \
         && cp /opt/flink/opt/flink-metrics-prometheus-*.jar /opt/flink/plugins/metrics-prometheus/; \
     fi
 
-# Carpeta donde scripts/submit_flink_job.sh copia el job antes de lanzarlo
-RUN mkdir -p /opt/flink/usrlib && chown -R flink:flink /opt/flink/usrlib
+# usrlib: donde scripts/submit_flink_job.sh copia el job antes de lanzarlo.
+# checkpoints: se monta como volumen compartido JobManager/TaskManager; al crearla
+# aquí con dueño flink, el volumen nuevo hereda esos permisos.
+RUN mkdir -p /opt/flink/usrlib /opt/flink/checkpoints/checkpoints /opt/flink/checkpoints/savepoints \
+    && chown -R flink:flink /opt/flink/usrlib /opt/flink/checkpoints

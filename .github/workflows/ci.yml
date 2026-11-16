@@ -1,0 +1,75 @@
+# CI: comprobaciones estáticas y prueba extremo a extremo del pipeline completo.
+# El job e2e levanta todo el docker compose en el runner (como en Codespaces, los
+# scripts Python corren en el host y Prometheus los ve por host.docker.internal).
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt pyyaml
+      - name: Python compila
+        run: python -m py_compile scripts/*.py tests/*.py
+      - name: Scripts de shell
+        run: for f in scripts/*.sh .devcontainer/*.sh; do bash -n "$f"; done
+      - name: JSON y YAML válidos
+        run: |
+          python - <<'EOF'
+          import json, pathlib, yaml
+          for p in pathlib.Path(".").rglob("*.json"):
+              if ".git" not in p.parts:
+                  json.loads(p.read_text(encoding="utf-8"))
+          for p in list(pathlib.Path("docker").rglob("*.yml")) + [pathlib.Path("docker-compose.yml")]:
+              yaml.safe_load(p.read_text(encoding="utf-8"))
+          print("ok")
+          EOF
+      - name: docker compose config
+        run: docker compose config -q
+
+  e2e:
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+
+      - name: Construir y levantar servicios
+        run: docker compose up -d --build
+
+      - name: Topic, tablas y job de Flink
+        run: |
+          bash scripts/init_infra.sh
+          bash scripts/submit_flink_job.sh
+
+      - name: Generador, API y comprobación extremo a extremo
+        run: |
+          nohup python scripts/generator.py > generator.out 2>&1 &
+          nohup python scripts/api.py       > api.out       2>&1 &
+          python tests/e2e_check.py --timeout 300
+
+      - name: Relanzar con savepoint no duplica ventanas
+        run: |
+          bash scripts/submit_flink_job.sh --restart
+          sleep 60
+          python tests/e2e_check.py --timeout 120
+
+      - name: Logs si algo falla
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --tail 150
+          echo "--- generator.out"; tail -50 generator.out || true
+          echo "--- api.out";       tail -50 api.out || true

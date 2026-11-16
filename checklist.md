@@ -1,12 +1,14 @@
 # Checklist de verificación — Big Data Aplicado
 
+> Atajo: `python3 tests/e2e_check.py` hace casi todas estas comprobaciones de una vez.
+
 ## 1. Infraestructura Docker
 
 - [ ] Todos los contenedores en estado `healthy`
   ```bash
   docker compose ps
   ```
-  Servicios esperados: `redpanda`, `prometheus`, `loki`, `grafana`, `flink-jobmanager`, `flink-taskmanager`, `postgres`
+  Servicios esperados: `redpanda`, `redpanda-console`, `prometheus`, `loki`, `grafana`, `flink-jobmanager`, `flink-taskmanager`, `postgres`
 
 ---
 
@@ -83,6 +85,12 @@
   ```
   Esperado: `"title": "ILERNA - Big Data Aplicado"`
 
+- [ ] Reglas de alerta provisionadas (`Job de Flink caído`, `Sin ventanas nuevas en PostgreSQL`)
+  ```bash
+  curl -s http://localhost:3000/api/v1/provisioning/alert-rules \
+    -H "Authorization: Basic YWRtaW46YWRtaW4=" | python3 -m json.tool | grep '"title"'
+  ```
+
 - [ ] Dashboard visible en el navegador → carpeta **Big Data Pipeline** → **ILERNA - Big Data Aplicado**
 
 ---
@@ -112,7 +120,7 @@
   python3 scripts/generator.py
   ```
 
-- [ ] Job de Flink enviado (una vez)
+- [ ] Job de Flink enviado (lo hace `start.sh`; a mano si no)
   ```bash
   bash scripts/submit_flink_job.sh
   ```
@@ -127,6 +135,14 @@
   docker exec bigdata-postgres psql -U bigdata_user -d bigdata \
     -c "SELECT product, SUM(num_transactions) AS txn FROM ventas_por_producto GROUP BY product ORDER BY txn DESC;"
   ```
+
+- [ ] Sin ventanas duplicadas (debe salir 0)
+  ```bash
+  docker exec bigdata-postgres psql -U bigdata_user -d bigdata -tc \
+    "SELECT COUNT(*) FROM (SELECT 1 FROM ventas_por_producto GROUP BY window_start, product HAVING COUNT(*) > 1) d;"
+  ```
+
+- [ ] Redpanda Console muestra `ventas_topic` y el consumer group `flink-ventas` (puerto `8084`)
 
 - [ ] Resumen global vía API REST
   ```bash

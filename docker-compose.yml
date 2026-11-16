@@ -2,10 +2,19 @@
 # ruta, así que NO se usan bind mounts. La configuración propia (Prometheus, Grafana,
 # Flink) va dentro de imágenes construidas desde docker/<servicio>/ con COPY.
 # Tras editar algo en docker/:  docker compose up -d --build <servicio>
+#
+# Credenciales: se leen de .env si existe (ver .env.example); si no, se usan los
+# valores por defecto que aparecen tras ":-".
 
 x-flink-image: &flink-image
   build: ./docker/flink
   image: bigdata-flink:1.18.1-pyflink
+
+# Variables que lee scripts/flink_job.py (se ejecuta dentro del JobManager)
+x-flink-env: &flink-db-env
+  POSTGRES_DB: ${POSTGRES_DB:-bigdata}
+  POSTGRES_USER: ${POSTGRES_USER:-bigdata_user}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bigdata_pass}
 
 services:
   redpanda:
@@ -36,6 +45,23 @@ services:
       timeout: 10s
       retries: 3
       start_period: 45s
+    networks:
+      - bigdata-network
+
+  # Interfaz web de Redpanda: topics, mensajes, consumer groups y lag
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.8.19
+    container_name: bigdata-redpanda-console
+    restart: unless-stopped
+    ports:
+      - "8084:8080"
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      REDPANDA_ADMINAPI_ENABLED: "true"
+      REDPANDA_ADMINAPI_URLS: http://redpanda:9644
+    depends_on:
+      redpanda:
+        condition: service_healthy
     networks:
       - bigdata-network
 
@@ -89,11 +115,16 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/pipeline.json
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      # Admin para que los alumnos editen sin login; pon Viewer en .env para solo lectura
+      GF_AUTH_ANONYMOUS_ORG_ROLE: ${GRAFANA_ANONYMOUS_ROLE:-Admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/pipeline.json
+      # Usadas por provisioning/datasources/datasources.yml
+      POSTGRES_DB: ${POSTGRES_DB:-bigdata}
+      POSTGRES_USER: ${POSTGRES_USER:-bigdata_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bigdata_pass}
     volumes:
       - grafana_data:/var/lib/grafana
     depends_on:
@@ -119,15 +150,20 @@ services:
       - "8083:8081"
     command: jobmanager
     environment:
-      - |
-        FLINK_PROPERTIES=
+      <<: *flink-db-env
+      FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         jobmanager.memory.process.size: 1024m
         parallelism.default: 1
         metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
         metrics.reporter.prom.port: 9249
+        state.checkpoints.dir: file:///opt/flink/checkpoints/checkpoints
+        state.savepoints.dir: file:///opt/flink/checkpoints/savepoints
+        state.checkpoints.num-retained: 2
+        execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
     volumes:
       - flink_jobmanager_data:/opt/flink/data
+      - flink_checkpoints:/opt/flink/checkpoints   # compartido con el TaskManager
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8081/overview"]
       interval: 30s
@@ -146,15 +182,20 @@ services:
         condition: service_healthy
     command: taskmanager
     environment:
-      - |
-        FLINK_PROPERTIES=
+      <<: *flink-db-env
+      FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 2
         taskmanager.memory.process.size: 1024m
         metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
         metrics.reporter.prom.port: 9249
+        state.checkpoints.dir: file:///opt/flink/checkpoints/checkpoints
+        state.savepoints.dir: file:///opt/flink/checkpoints/savepoints
+        state.checkpoints.num-retained: 2
+        execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
     volumes:
       - flink_taskmanager_data:/opt/flink/data
+      - flink_checkpoints:/opt/flink/checkpoints
     healthcheck:
       test: ["CMD", "pgrep", "-f", "taskmanager"]
       interval: 30s
@@ -168,16 +209,16 @@ services:
     container_name: bigdata-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: bigdata_user
-      POSTGRES_PASSWORD: bigdata_pass
-      POSTGRES_DB: bigdata
+      POSTGRES_USER: ${POSTGRES_USER:-bigdata_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bigdata_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-bigdata}
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bigdata_user -d bigdata"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -192,6 +233,7 @@ volumes:
   grafana_data:
   flink_jobmanager_data:
   flink_taskmanager_data:
+  flink_checkpoints:
   postgres_data:
 
 networks:

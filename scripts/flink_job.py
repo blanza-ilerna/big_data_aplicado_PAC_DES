@@ -21,7 +21,8 @@ JOB_NAME = "ventas-ventanas-30s"
 # Dentro de la red Docker: listener interno de Redpanda y host del servicio postgres
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_INTERNAL", "redpanda:9092")
 TOPIC = os.getenv("KAFKA_TOPIC", "ventas_topic")
-JDBC_URL = os.getenv("JDBC_URL", "jdbc:postgresql://postgres:5432/bigdata")
+PG_DB = os.getenv("POSTGRES_DB", "bigdata")
+JDBC_URL = os.getenv("JDBC_URL", f"jdbc:postgresql://postgres:5432/{PG_DB}")
 PG_USER = os.getenv("POSTGRES_USER", "bigdata_user")
 PG_PASSWORD = os.getenv("POSTGRES_PASSWORD", "bigdata_pass")
 
@@ -76,6 +77,9 @@ def main() -> None:
 
     # --- Destinos: PostgreSQL (JDBC) ---------------------------------------
     # Solo se declaran las columnas que escribe Flink; `id` lo genera PostgreSQL.
+    # La PRIMARY KEY pone el conector en modo upsert (INSERT ... ON CONFLICT DO
+    # UPDATE) y debe coincidir con las restricciones UNIQUE de sql/schema.sql.
+    # Así, reprocesar mensajes tras un fallo sobrescribe la ventana en vez de duplicarla.
     t_env.execute_sql(f"""
         CREATE TABLE pg_por_producto (
             window_start     TIMESTAMP(3),
@@ -83,7 +87,8 @@ def main() -> None:
             product          STRING,
             total_amount     DECIMAL(12, 2),
             num_transactions INT,
-            avg_amount       DECIMAL(12, 2)
+            avg_amount       DECIMAL(12, 2),
+            PRIMARY KEY (window_start, product) NOT ENFORCED
         ) WITH ({jdbc_options('ventas_por_producto')})
     """)
 
@@ -93,7 +98,8 @@ def main() -> None:
             window_end       TIMESTAMP(3),
             user_id          STRING,
             total_amount     DECIMAL(12, 2),
-            num_transactions INT
+            num_transactions INT,
+            PRIMARY KEY (window_start, user_id) NOT ENFORCED
         ) WITH ({jdbc_options('ventas_por_usuario')})
     """)
 

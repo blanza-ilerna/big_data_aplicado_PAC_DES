@@ -28,6 +28,7 @@ else
 fi
 
 echo "-> Esperando a PostgreSQL..."
-wait_for "PostgreSQL" docker exec "$POSTGRES" pg_isready -U bigdata_user -d bigdata
-docker exec -i "$POSTGRES" psql -q -v ON_ERROR_STOP=1 -U bigdata_user -d bigdata < sql/schema.sql
+# Usuario y base se leen del propio contenedor (vienen de .env o de los valores por defecto)
+wait_for "PostgreSQL" docker exec "$POSTGRES" sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+docker exec -i "$POSTGRES" sh -c 'psql -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < sql/schema.sql
 echo "   Tablas listas"
