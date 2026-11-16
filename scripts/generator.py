@@ -6,7 +6,7 @@ import sys
 import time
 import logging
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from kafka import KafkaProducer
 from prometheus_client import start_http_server, Counter
 from pythonjsonlogger import jsonlogger
@@ -86,7 +86,8 @@ usuarios = ['user_1', 'user_2', 'user_3', 'user_4']
 def generate_data():
     while running:
         compra = {
-            'timestamp': datetime.now().isoformat(),
+            # UTC sin zona, ISO-8601 con milisegundos: lo que espera el job de Flink
+            'timestamp': datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='milliseconds'),
             'user_id': random.choice(usuarios),
             'product': random.choice(productos),
             'amount': round(random.uniform(10.0, 500.0), 2)

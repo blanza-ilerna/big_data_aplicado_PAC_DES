@@ -24,8 +24,9 @@
   Targets esperados (con los scripts corriendo):
   - `prometheus` — localhost:9090
   - `redpanda` — redpanda:9644
-  - `python_app` — host.docker.internal:8000
-  - `flink_job` — host.docker.internal:8002
+  - `flink` — flink-jobmanager:9249 y flink-taskmanager:9249
+  - `generator` — host.docker.internal:8000
+  - `python_consumer` — host.docker.internal:8002 (solo con el plan B; si no, `down` es normal)
 
 - [ ] Métricas del generador disponibles
   ```bash
@@ -47,7 +48,17 @@
   curl -s http://localhost:8083/taskmanagers | python3 -m json.tool
   ```
 
-> `flink_job.py` es un consumidor Python y **no aparece** en `/jobs` de Flink. Para comprobar que corre, usar sus métricas (`curl -s http://localhost:8002/metrics | grep "^job_"`) o el target `flink_job` de Prometheus.
+- [ ] Job `ventas-ventanas-30s` en estado `RUNNING` (después de `bash scripts/submit_flink_job.sh`)
+  ```bash
+  curl -s http://localhost:8083/jobs/overview | python3 -m json.tool | grep -E '"name"|"state"'
+  ```
+  Ojo: `/jobs/overview` usa el campo `state`; `/jobs` usa `status`.
+
+- [ ] Métricas de Flink en Prometheus
+  ```bash
+  curl -s "http://localhost:9090/api/v1/query?query=flink_jobmanager_numRunningJobs" | python3 -m json.tool
+  ```
+  Esperado: valor `1`
 
 ---
 
@@ -59,7 +70,7 @@
   ```
   Esperado: `"database":"ok"`
 
-- [ ] Datasources auto-provisionados (Prometheus + Loki)
+- [ ] Datasources auto-provisionados (Prometheus + Loki + PostgreSQL)
   ```bash
   curl -s http://localhost:3000/api/datasources \
     -H "Authorization: Basic YWRtaW46YWRtaW4="
@@ -101,9 +112,9 @@
   python3 scripts/generator.py
   ```
 
-- [ ] **Terminal 2** — Job de procesamiento corriendo
+- [ ] Job de Flink enviado (una vez)
   ```bash
-  python3 scripts/flink_job.py
+  bash scripts/submit_flink_job.sh
   ```
 
 - [ ] **Terminal 3** — API REST corriendo (opcional)
@@ -111,7 +122,7 @@
   python3 scripts/api.py
   ```
 
-- [ ] Datos en PostgreSQL (tras ~30 s)
+- [ ] Datos en PostgreSQL (tras ~60 s)
   ```bash
   docker exec bigdata-postgres psql -U bigdata_user -d bigdata \
     -c "SELECT product, SUM(num_transactions) AS txn FROM ventas_por_producto GROUP BY product ORDER BY txn DESC;"
@@ -127,10 +138,6 @@
   curl -s http://localhost:8000/metrics | grep "^app_"
   ```
 
-- [ ] Métricas del job
-  ```bash
-  curl -s http://localhost:8002/metrics | grep "^job_"
-  ```
 
 - [ ] Paneles del dashboard de Grafana muestran datos en tiempo real
 
@@ -155,40 +162,34 @@ rate(app_requests_total{http_status="500"}[1m])
 rate(app_requests_total{http_status="200"}[1m])
 ```
 
-**Métricas del job de procesamiento:**
+**Métricas de Flink:**
 ```promql
-# Total mensajes consumidos de Redpanda
-job_messages_consumed_total
+# Jobs en ejecución (debe ser 1)
+flink_jobmanager_numRunningJobs
 
-# Ventanas de 30s escritas en PostgreSQL
-job_windows_flushed_total
+# Reinicios del job (si crece, el job está fallando)
+flink_jobmanager_job_numRestarts
 
-# Transacciones en la última ventana procesada
-job_last_window_transactions
-
-# Errores de escritura en BD
-job_db_errors_total
-
-# Duración de ventana — percentil 50 y 95
-histogram_quantile(0.50, rate(job_window_duration_seconds_bucket[5m]))
-histogram_quantile(0.95, rate(job_window_duration_seconds_bucket[5m]))
+# Registros por segundo que lee el origen Kafka del job
+sum(rate(flink_taskmanager_job_task_operator_numRecordsOut{operator_name=~".*kafka_ventas.*"}[1m]))
 ```
 
 ---
 
 ### Paneles del dashboard Grafana
 
-| Panel | Tipo | Query |
+| Panel | Origen | Query |
 |---|---|---|
-| Total peticiones generadas | Stat | `sum(app_requests_total)` |
-| Mensajes consumidos por el job | Stat | `job_messages_consumed_total` |
-| Ventanas escritas en PostgreSQL | Stat | `job_windows_flushed_total` |
-| Errores de escritura en BD | Stat | `job_db_errors_total` |
-| Tasa producción vs consumo | Timeseries | `sum(rate(app_requests_total[1m]))` + `rate(job_messages_consumed_total[1m])` |
-| Tasa errores HTTP 500 | Timeseries | `rate(app_requests_total{http_status="500"}[1m])` |
-| Transacciones por ventana de 30s | Timeseries | `job_last_window_transactions` |
-| Duración real de ventana | Timeseries | `histogram_quantile(0.50/0.95, ...)` |
-| Logs del generador | Logs (Loki) | `{job="python_generator"}` |
+| Peticiones generadas | Prometheus | `sum(app_requests_total)` |
+| Jobs Flink en ejecución | Prometheus | `max(flink_jobmanager_numRunningJobs)` |
+| Ventanas escritas en PostgreSQL | PostgreSQL | `COUNT(DISTINCT window_start)` |
+| Última ventana hace | PostgreSQL | `now() - MAX(window_end)` |
+| Producción vs consumo | Prometheus | `sum(rate(app_requests_total[1m]))` + `numRecordsOut` del origen Kafka |
+| Errores HTTP 500 simulados | Prometheus | `sum(rate(app_requests_total{http_status="500"}[1m]))` |
+| Importe por producto y ventana | PostgreSQL | `ventas_por_producto` |
+| Transacciones por ventana de 30 s | PostgreSQL | `SUM(num_transactions)` por ventana |
+| Resumen por producto / por usuario | PostgreSQL | agregados en el rango del dashboard |
+| Logs del generador | Loki | `{job="python_generator"}` |
 
 ---
 

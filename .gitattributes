@@ -1,0 +1,5 @@
+* text=auto
+# Los scripts de shell y los Dockerfile se ejecutan en Linux: siempre LF
+*.sh       text eol=lf
+Dockerfile text eol=lf
+*.yml      text eol=lf
