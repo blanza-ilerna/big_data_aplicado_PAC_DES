@@ -101,6 +101,16 @@ def flink_job_running():
     return running[0]["jid"]
 
 
+def flink_no_restarts():
+    """Un job que falla y se reinicia en bucle puede aparecer como RUNNING un instante."""
+    jid = flink_job_running()
+    exc = http_json(f"{FLINK}/jobs/{jid}/exceptions")
+    root = (exc.get("root-exception") or "").strip()
+    if root:
+        raise AssertionError("el job ha fallado al menos una vez: " + root.splitlines()[0][:300])
+    return "sin excepciones"
+
+
 def pg_rows():
     with psycopg2.connect(**PG) as conn, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*), COUNT(DISTINCT window_start) FROM ventas_por_producto")
@@ -248,6 +258,9 @@ def main():
     check("reglas de alerta", grafana_alert_rules)
     print("Loki")
     check("logs del generador", lambda: wait_until("logs", loki_logs, 60))
+    print("Flink (estabilidad)")
+    check("el job sigue en RUNNING", flink_job_running)
+    check("sin reinicios del job", flink_no_restarts)
     print("Otros")
     check("API REST", api_global, required=False)
     check("Redpanda Console", console_up, required=False)

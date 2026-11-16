@@ -50,18 +50,18 @@ def main() -> None:
     conf.set("table.local-time-zone", "UTC")
 
     # --- Origen: Redpanda (Kafka) ------------------------------------------
-    # `timestamp` llega como ISO-8601 en UTC sin zona ("2026-11-16T10:00:00.123").
-    # event_time: si el campo viene vacío o mal formado se usa 1970, de modo que el
-    # evento queda por detrás de la marca de agua y Flink lo descarta (dato tardío)
-    # en vez de romper el job.
+    # `timestamp` llega como ISO-8601 en UTC sin zona ("2026-11-16T10:00:00.123") y
+    # es el tiempo de evento. Marca de agua: se aceptan eventos hasta 5 s desordenados.
+    # (No se usa una columna calculada con COALESCE(..., TIMESTAMP '1970-...') para
+    # tolerar timestamps nulos: en Flink 1.18 el generador de código de la marca de
+    # agua no compila ese literal y el job entra en bucle de reinicios.)
     t_env.execute_sql(f"""
         CREATE TABLE kafka_ventas (
             `timestamp` TIMESTAMP(3),
             user_id     STRING,
             product     STRING,
             amount      DOUBLE,
-            event_time AS COALESCE(`timestamp`, TIMESTAMP '1970-01-01 00:00:00'),
-            WATERMARK FOR event_time AS event_time - INTERVAL '5' SECOND
+            WATERMARK FOR `timestamp` AS `timestamp` - INTERVAL '5' SECOND
         ) WITH (
             'connector' = 'kafka',
             'topic' = '{TOPIC}',
@@ -114,7 +114,7 @@ def main() -> None:
                CAST(ROUND(SUM(amount), 2) AS DECIMAL(12, 2)),
                CAST(COUNT(*) AS INT),
                CAST(ROUND(AVG(amount), 2) AS DECIMAL(12, 2))
-        FROM TABLE(TUMBLE(TABLE kafka_ventas, DESCRIPTOR(event_time), INTERVAL '30' SECOND))
+        FROM TABLE(TUMBLE(TABLE kafka_ventas, DESCRIPTOR(`timestamp`), INTERVAL '30' SECOND))
         GROUP BY window_start, window_end, product
     """)
 
@@ -125,7 +125,7 @@ def main() -> None:
                user_id,
                CAST(ROUND(SUM(amount), 2) AS DECIMAL(12, 2)),
                CAST(COUNT(*) AS INT)
-        FROM TABLE(TUMBLE(TABLE kafka_ventas, DESCRIPTOR(event_time), INTERVAL '30' SECOND))
+        FROM TABLE(TUMBLE(TABLE kafka_ventas, DESCRIPTOR(`timestamp`), INTERVAL '30' SECOND))
         GROUP BY window_start, window_end, user_id
     """)
 
