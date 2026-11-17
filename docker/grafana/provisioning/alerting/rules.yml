@@ -1,0 +1,76 @@
+# Alertas del pipeline (Grafana Alerting). Se ven en Alerting -> Alert rules.
+# No hay ningún contact point configurado: las alertas aparecen en la UI pero no
+# envían correos ni mensajes. Para eso, añade un contact point (email, Slack...).
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: pipeline
+    folder: Big Data Pipeline
+    interval: 1m
+    rules:
+      - uid: flink-job-caido
+        title: Job de Flink caído
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: max(flink_jobmanager_numRunningJobs)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+        # Sin datos = Flink no expone métricas (JobManager caído): también es alerta
+        noDataState: Alerting
+        execErrState: Error
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: No hay ningún job de Flink en ejecución
+          description: "Relánzalo con: bash scripts/submit_flink_job.sh"
+
+      - uid: sin-ventanas-nuevas
+        title: Sin ventanas nuevas en PostgreSQL
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: postgres
+            model:
+              refId: A
+              editorMode: code
+              rawQuery: true
+              format: table
+              rawSql: >-
+                SELECT EXTRACT(EPOCH FROM now() - MAX(window_end))::float AS segundos
+                FROM ventas_por_producto
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [180] }
+        # Tabla vacía (aún no se ha generado nada): no es una alerta
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: La última ventana escrita tiene más de 3 minutos
+          description: >-
+            Comprueba que generator.py está corriendo y que el job de Flink
+            está en RUNNING (UI de Flink, puerto 8083).

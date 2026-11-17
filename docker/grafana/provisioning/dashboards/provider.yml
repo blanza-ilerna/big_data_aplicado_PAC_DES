@@ -7,6 +7,8 @@ providers:
     type: file
     disableDeletion: false
     updateIntervalSeconds: 30
+    # Se puede editar en la UI, pero manda este archivo: para que un cambio sea
+    # permanente, llévalo al JSON, sube "version" y reconstruye la imagen.
     allowUiUpdates: true
     options:
       path: /etc/grafana/provisioning/dashboards

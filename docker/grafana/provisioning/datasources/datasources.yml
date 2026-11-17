@@ -1,0 +1,36 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: true
+
+  # Resultados del job de Flink
+  - name: PostgreSQL
+    uid: postgres
+    # Identificador del plugin de PostgreSQL desde Grafana 11 (antes "postgres")
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    # Grafana sustituye $VARIABLE por las variables de entorno del contenedor
+    # (definidas en docker-compose.yml a partir de .env)
+    user: $POSTGRES_USER
+    jsonData:
+      database: $POSTGRES_DB
+      sslmode: disable
+      postgresVersion: 1800
+      timescaledb: false
+    secureJsonData:
+      password: $POSTGRES_PASSWORD
+    editable: true

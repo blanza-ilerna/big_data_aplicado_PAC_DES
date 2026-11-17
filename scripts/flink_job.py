@@ -1,207 +1,137 @@
-import json
+"""
+Job de Apache Flink (PyFlink, Table API + SQL).
+
+Lee las compras de `ventas_topic` en Redpanda, las agrupa en ventanas *tumbling*
+de 30 s por **tiempo de evento** (el campo `timestamp` de cada mensaje) y escribe
+dos agregados en PostgreSQL:
+
+    ventas_por_producto  (window_start, window_end, product, total_amount, num_transactions, avg_amount)
+    ventas_por_usuario   (window_start, window_end, user_id, total_amount, num_transactions)
+
+Este archivo NO se ejecuta con `python3` desde el devcontainer: se envía al clúster
+con `bash scripts/submit_flink_job.sh`, que lo copia al JobManager y lanza
+`flink run -d -py`. Las tablas se crean antes con `sql/schema.sql`.
+"""
 import os
-import signal
-import sys
-import time
-import logging
-from collections import defaultdict
-from datetime import datetime, timezone
-from kafka import KafkaConsumer
-import psycopg2
-from psycopg2.extras import execute_values
-from pythonjsonlogger import jsonlogger
-from prometheus_client import start_http_server, Counter, Gauge, Histogram
 
-# --- LOGS ---
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(jsonlogger.JsonFormatter())
-logging.basicConfig(level=logging.INFO, handlers=[handler])
-logger = logging.getLogger(__name__)
+from pyflink.table import EnvironmentSettings, TableEnvironment
 
-# --- MÉTRICAS ---
-MESSAGES_CONSUMED   = Counter('job_messages_consumed_total',   'Mensajes leídos de Redpanda')
-WINDOWS_FLUSHED     = Counter('job_windows_flushed_total',     'Ventanas escritas en PostgreSQL')
-DB_ERRORS           = Counter('job_db_errors_total',           'Errores al escribir en PostgreSQL')
-LAST_WINDOW_TXN     = Gauge(  'job_last_window_transactions',  'Transacciones en la última ventana')
-WINDOW_DURATION     = Histogram('job_window_duration_seconds', 'Duración real de cada ventana',
-                                buckets=[15, 30, 45, 60, 90, 120])
+JOB_NAME = "ventas-ventanas-30s"
 
-# --- CONFIG ---
-KAFKA_BOOTSTRAP = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:19092')
-TOPIC = 'ventas_topic'
-WINDOW_SECONDS = 30
-
-DB = {
-    'host':     os.getenv('POSTGRES_HOST',     'localhost'),
-    'port':     int(os.getenv('POSTGRES_PORT', '5432')),
-    'dbname':   os.getenv('POSTGRES_DB',       'bigdata'),
-    'user':     os.getenv('POSTGRES_USER',     'bigdata_user'),
-    'password': os.getenv('POSTGRES_PASSWORD', 'bigdata_pass'),
-}
-
-# --- SHUTDOWN ---
-running = True
-
-def handle_shutdown(signum, frame):
-    global running
-    logger.info("Señal de parada recibida, cerrando job...")
-    running = False
-
-signal.signal(signal.SIGINT, handle_shutdown)
-signal.signal(signal.SIGTERM, handle_shutdown)
+# Dentro de la red Docker: listener interno de Redpanda y host del servicio postgres
+KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_INTERNAL", "redpanda:9092")
+TOPIC = os.getenv("KAFKA_TOPIC", "ventas_topic")
+PG_DB = os.getenv("POSTGRES_DB", "bigdata")
+JDBC_URL = os.getenv("JDBC_URL", f"jdbc:postgresql://postgres:5432/{PG_DB}")
+PG_USER = os.getenv("POSTGRES_USER", "bigdata_user")
+PG_PASSWORD = os.getenv("POSTGRES_PASSWORD", "bigdata_pass")
 
 
-def init_db(conn):
-    with conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS ventas_por_producto (
-                id               SERIAL PRIMARY KEY,
-                window_start     TIMESTAMPTZ NOT NULL,
-                window_end       TIMESTAMPTZ NOT NULL,
-                product          VARCHAR(100) NOT NULL,
-                total_amount     NUMERIC(12, 2) NOT NULL,
-                num_transactions INTEGER NOT NULL,
-                avg_amount       NUMERIC(12, 2) NOT NULL
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS ventas_por_usuario (
-                id               SERIAL PRIMARY KEY,
-                window_start     TIMESTAMPTZ NOT NULL,
-                window_end       TIMESTAMPTZ NOT NULL,
-                user_id          VARCHAR(100) NOT NULL,
-                total_amount     NUMERIC(12, 2) NOT NULL,
-                num_transactions INTEGER NOT NULL
-            )
-        """)
-        conn.commit()
-    logger.info("Tablas inicializadas en PostgreSQL")
+def jdbc_options(table_name: str) -> str:
+    return f"""
+        'connector' = 'jdbc',
+        'url' = '{JDBC_URL}',
+        'driver' = 'org.postgresql.Driver',
+        'table-name' = '{table_name}',
+        'username' = '{PG_USER}',
+        'password' = '{PG_PASSWORD}',
+        'sink.buffer-flush.max-rows' = '100',
+        'sink.buffer-flush.interval' = '2s',
+        'sink.max-retries' = '3'
+    """
 
 
-def flush_window(conn, window_start, window_end, by_product, by_user):
-    if not by_product and not by_user:
-        return
+def main() -> None:
+    t_env = TableEnvironment.create(EnvironmentSettings.in_streaming_mode())
+    conf = t_env.get_config()
+    conf.set("pipeline.name", JOB_NAME)
+    conf.set("parallelism.default", "1")            # el topic tiene 1 partición
+    conf.set("execution.checkpointing.interval", "30 s")  # confirma offsets en Kafka
+    conf.set("table.local-time-zone", "UTC")
 
-    with conn.cursor() as cur:
-        if by_product:
-            rows_product = [
-                (window_start, window_end, product,
-                 round(data['total'], 2), data['count'],
-                 round(data['total'] / data['count'], 2))
-                for product, data in by_product.items()
-            ]
-            execute_values(cur, """
-                INSERT INTO ventas_por_producto
-                    (window_start, window_end, product, total_amount, num_transactions, avg_amount)
-                VALUES %s
-            """, rows_product)
+    # --- Origen: Redpanda (Kafka) ------------------------------------------
+    # `timestamp` llega como ISO-8601 en UTC sin zona ("2026-11-16T10:00:00.123") y
+    # es el tiempo de evento. Marca de agua: se aceptan eventos hasta 5 s desordenados.
+    # (No se usa una columna calculada con COALESCE(..., TIMESTAMP '1970-...') para
+    # tolerar timestamps nulos: en Flink 1.18 el generador de código de la marca de
+    # agua no compila ese literal y el job entra en bucle de reinicios.)
+    t_env.execute_sql(f"""
+        CREATE TABLE kafka_ventas (
+            `timestamp` TIMESTAMP(3),
+            user_id     STRING,
+            product     STRING,
+            amount      DOUBLE,
+            WATERMARK FOR `timestamp` AS `timestamp` - INTERVAL '5' SECOND
+        ) WITH (
+            'connector' = 'kafka',
+            'topic' = '{TOPIC}',
+            'properties.bootstrap.servers' = '{KAFKA_BOOTSTRAP}',
+            'properties.group.id' = 'flink-ventas',
+            'properties.auto.offset.reset' = 'earliest',
+            'scan.startup.mode' = 'group-offsets',
+            'format' = 'json',
+            'json.timestamp-format.standard' = 'ISO-8601',
+            'json.ignore-parse-errors' = 'true'
+        )
+    """)
 
-        if by_user:
-            rows_user = [
-                (window_start, window_end, user_id,
-                 round(data['total'], 2), data['count'])
-                for user_id, data in by_user.items()
-            ]
-            execute_values(cur, """
-                INSERT INTO ventas_por_usuario
-                    (window_start, window_end, user_id, total_amount, num_transactions)
-                VALUES %s
-            """, rows_user)
+    # --- Destinos: PostgreSQL (JDBC) ---------------------------------------
+    # Solo se declaran las columnas que escribe Flink; `id` lo genera PostgreSQL.
+    # La PRIMARY KEY pone el conector en modo upsert (INSERT ... ON CONFLICT DO
+    # UPDATE) y debe coincidir con las restricciones UNIQUE de sql/schema.sql.
+    # Así, reprocesar mensajes tras un fallo sobrescribe la ventana en vez de duplicarla.
+    t_env.execute_sql(f"""
+        CREATE TABLE pg_por_producto (
+            window_start     TIMESTAMP(3),
+            window_end       TIMESTAMP(3),
+            product          STRING,
+            total_amount     DECIMAL(12, 2),
+            num_transactions INT,
+            avg_amount       DECIMAL(12, 2),
+            PRIMARY KEY (window_start, product) NOT ENFORCED
+        ) WITH ({jdbc_options('ventas_por_producto')})
+    """)
 
-        conn.commit()
+    t_env.execute_sql(f"""
+        CREATE TABLE pg_por_usuario (
+            window_start     TIMESTAMP(3),
+            window_end       TIMESTAMP(3),
+            user_id          STRING,
+            total_amount     DECIMAL(12, 2),
+            num_transactions INT,
+            PRIMARY KEY (window_start, user_id) NOT ENFORCED
+        ) WITH ({jdbc_options('ventas_por_usuario')})
+    """)
 
-    logger.info(
-        "Ventana escrita en PostgreSQL",
-        extra={
-            "window_start": window_start.isoformat(),
-            "window_end": window_end.isoformat(),
-            "productos": len(by_product),
-            "usuarios": len(by_user),
-        }
-    )
+    # --- Ventanas tumbling de 30 s (Window TVF) -----------------------------
+    statements = t_env.create_statement_set()   # un solo job, un solo consumidor Kafka
 
+    statements.add_insert_sql("""
+        INSERT INTO pg_por_producto
+        SELECT window_start,
+               window_end,
+               product,
+               CAST(ROUND(SUM(amount), 2) AS DECIMAL(12, 2)),
+               CAST(COUNT(*) AS INT),
+               CAST(ROUND(AVG(amount), 2) AS DECIMAL(12, 2))
+        FROM TABLE(TUMBLE(TABLE kafka_ventas, DESCRIPTOR(`timestamp`), INTERVAL '30' SECOND))
+        GROUP BY window_start, window_end, product
+    """)
 
-def run():
-    # Conexión PostgreSQL
-    conn = None
-    while not conn:
-        try:
-            conn = psycopg2.connect(**DB)
-            logger.info("Conectado a PostgreSQL")
-        except Exception as e:
-            logger.warning("Esperando a PostgreSQL...", extra={"error": str(e)})
-            time.sleep(5)
+    statements.add_insert_sql("""
+        INSERT INTO pg_por_usuario
+        SELECT window_start,
+               window_end,
+               user_id,
+               CAST(ROUND(SUM(amount), 2) AS DECIMAL(12, 2)),
+               CAST(COUNT(*) AS INT)
+        FROM TABLE(TUMBLE(TABLE kafka_ventas, DESCRIPTOR(`timestamp`), INTERVAL '30' SECOND))
+        GROUP BY window_start, window_end, user_id
+    """)
 
-    init_db(conn)
-
-    # Conexión Redpanda/Kafka
-    consumer = None
-    while not consumer:
-        try:
-            consumer = KafkaConsumer(
-                TOPIC,
-                bootstrap_servers=[KAFKA_BOOTSTRAP],
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-                auto_offset_reset='earliest',
-                group_id='flink-job-group',
-                consumer_timeout_ms=1000,
-            )
-            logger.info("Conectado a Redpanda", extra={"topic": TOPIC})
-        except Exception as e:
-            logger.warning("Esperando a Redpanda...", extra={"error": str(e)})
-            time.sleep(5)
-
-    # Ventana tumbling de WINDOW_SECONDS segundos
-    window_start = datetime.now(timezone.utc)
-    by_product = defaultdict(lambda: {'total': 0.0, 'count': 0})
-    by_user    = defaultdict(lambda: {'total': 0.0, 'count': 0})
-
-    logger.info("Job iniciado", extra={"window_seconds": WINDOW_SECONDS, "topic": TOPIC})
-
-    while running:
-        try:
-            for message in consumer:
-                if not running:
-                    break
-                event = message.value
-                product = event['product']
-                user_id = event['user_id']
-                amount  = float(event['amount'])
-
-                by_product[product]['total'] += amount
-                by_product[product]['count'] += 1
-                by_user[user_id]['total']    += amount
-                by_user[user_id]['count']    += 1
-                MESSAGES_CONSUMED.inc()
-
-            now = datetime.now(timezone.utc)
-            elapsed = (now - window_start).total_seconds()
-            if elapsed >= WINDOW_SECONDS:
-                total_txn = sum(d['count'] for d in by_product.values())
-                try:
-                    flush_window(conn, window_start, now, dict(by_product), dict(by_user))
-                    WINDOWS_FLUSHED.inc()
-                    WINDOW_DURATION.observe(elapsed)
-                    LAST_WINDOW_TXN.set(total_txn)
-                except Exception as e:
-                    DB_ERRORS.inc()
-                    logger.error("Error escribiendo ventana en PostgreSQL", extra={"error": str(e)})
-                window_start = now
-                by_product.clear()
-                by_user.clear()
-
-        except Exception as e:
-            logger.error("Error en el procesamiento", extra={"error": str(e)})
-            time.sleep(1)
-
-    flush_window(conn, window_start, datetime.now(timezone.utc),
-                 dict(by_product), dict(by_user))
-    consumer.close()
-    conn.close()
-    logger.info("Job detenido correctamente")
+    # Con `flink run -d` esto envía el job y vuelve sin esperar a que termine
+    statements.execute()
 
 
-if __name__ == '__main__':
-    start_http_server(8002)
-    logger.info("Métricas Prometheus expuestas", extra={"port": 8002})
-    run()
+if __name__ == "__main__":
+    main()

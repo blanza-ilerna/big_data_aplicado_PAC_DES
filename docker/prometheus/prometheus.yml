@@ -1,0 +1,29 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Métricas internas del broker
+  - job_name: redpanda
+    static_configs:
+      - targets: ['redpanda:9644']
+
+  # Reporter Prometheus de Flink (JobManager y TaskManager)
+  - job_name: flink
+    static_configs:
+      - targets: ['flink-jobmanager:9249', 'flink-taskmanager:9249']
+
+  # Scripts que corren en el devcontainer (red del host): generator.py
+  - job_name: generator
+    static_configs:
+      - targets: ['host.docker.internal:8000']
+
+  # Solo con el plan B (scripts/python_consumer.py); si no se usa, aparece "down"
+  - job_name: python_consumer
+    static_configs:
+      - targets: ['host.docker.internal:8002']
