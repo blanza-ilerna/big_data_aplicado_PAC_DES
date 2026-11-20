@@ -187,7 +187,37 @@ flink_jobmanager_job_numRestarts
 
 # Registros por segundo que lee el origen Kafka del job
 sum(rate(flink_taskmanager_job_task_operator_numRecordsOut{operator_name=~".*kafka_ventas.*"}[1m]))
+
+# Filas escritas en PostgreSQL en los últimos 5 min (sinks JDBC)
+sum(increase(flink_taskmanager_job_task_operator_numRecordsOut{operator_name=~".*pg_por_.*"}[5m]))
 ```
+
+#### Métricas adicionales de Flink
+
+Los nombres los genera el reporter de Prometheus de Flink (prefijo `flink_`, ámbito y nombre de la métrica). Pueden variar según la versión de Flink y del conector. Para comprobar cuáles existen en el clúster: `{__name__=~"flink_.*"}` en Prometheus (`http://localhost:9090/graph`) o Grafana → Explore.
+
+| Métrica | Qué mide | Consulta |
+|---|---|---|
+| `flink_jobmanager_job_uptime` | Milisegundos transcurridos desde que el job está en ejecución. Vuelve a 0 tras un reinicio. | `max(flink_jobmanager_job_uptime) / 1000` |
+| `flink_jobmanager_job_numRestarts` | Reinicios acumulados del job. | `max(flink_jobmanager_job_numRestarts)` |
+| `flink_jobmanager_job_lastCheckpointDuration` | Duración en ms del último checkpoint completado. | `max(flink_jobmanager_job_lastCheckpointDuration)` |
+| `flink_jobmanager_job_lastCheckpointSize` | Tamaño en bytes del último checkpoint. | `max(flink_jobmanager_job_lastCheckpointSize)` |
+| `flink_jobmanager_job_numberOfFailedCheckpoints` | Número de checkpoints fallidos. | `max(flink_jobmanager_job_numberOfFailedCheckpoints)` |
+| `flink_taskmanager_job_task_operator_numRecordsIn` | Registros recibidos por cada operador. | `sum by (operator_name) (rate(flink_taskmanager_job_task_operator_numRecordsIn[1m]))` |
+| `flink_taskmanager_job_task_operator_numRecordsOut` | Registros emitidos por cada operador. | `sum by (operator_name) (rate(flink_taskmanager_job_task_operator_numRecordsOut[1m]))` |
+| `flink_taskmanager_job_task_operator_watermarkLag` | Diferencia en ms entre el reloj y la marca de agua del origen. | `max(flink_taskmanager_job_task_operator_watermarkLag)` |
+| `flink_taskmanager_job_task_operator_currentEmitEventTimeLag` | Diferencia en ms entre el tiempo de evento de un registro y el momento en que el origen lo emite. | `max(flink_taskmanager_job_task_operator_currentEmitEventTimeLag)` |
+| `flink_taskmanager_job_task_currentInputWatermark` | Valor actual de la marca de agua (epoch en ms) en cada tarea. | `max by (task_name) (flink_taskmanager_job_task_currentInputWatermark)` |
+| `flink_taskmanager_job_task_numLateRecordsDropped` | Registros descartados por llegar con retraso superior al permitido. | `sum(flink_taskmanager_job_task_numLateRecordsDropped)` |
+| `flink_taskmanager_job_task_backPressuredTimeMsPerSecond` | Ms por segundo que una tarea está bloqueada esperando a la siguiente. Rango 0–1000. | `max by (task_name) (flink_taskmanager_job_task_backPressuredTimeMsPerSecond)` |
+| `flink_taskmanager_job_task_busyTimeMsPerSecond` | Ms por segundo que una tarea está procesando datos. Rango 0–1000. | `max by (task_name) (flink_taskmanager_job_task_busyTimeMsPerSecond)` |
+| `flink_taskmanager_job_task_idleTimeMsPerSecond` | Ms por segundo que una tarea está sin datos que procesar. Rango 0–1000. | `max by (task_name) (flink_taskmanager_job_task_idleTimeMsPerSecond)` |
+| `flink_taskmanager_Status_JVM_Memory_Heap_Used` | Bytes de heap usados por la JVM del TaskManager. | `flink_taskmanager_Status_JVM_Memory_Heap_Used` |
+| `flink_taskmanager_Status_JVM_CPU_Load` | Carga de CPU de la JVM del TaskManager (0–1). | `flink_taskmanager_Status_JVM_CPU_Load` |
+| `flink_taskmanager_Status_JVM_GarbageCollector_<nombre>_Time` | Tiempo acumulado en ms de recolección de basura. `<nombre>` depende del recolector en uso. | `rate({__name__=~"flink_taskmanager_Status_JVM_GarbageCollector_.*_Time"}[1m])` |
+| `flink_taskmanager_job_task_operator_KafkaSourceReader_KafkaConsumer_records_lag_max` | Lag máximo del consumidor Kafka, en registros. | `max(flink_taskmanager_job_task_operator_KafkaSourceReader_KafkaConsumer_records_lag_max)` |
+
+Los tres paneles inferiores del dashboard (reinicios, retraso de marca de agua y contrapresión) usan algunas de estas métricas.
 
 ---
 
@@ -205,6 +235,9 @@ sum(rate(flink_taskmanager_job_task_operator_numRecordsOut{operator_name=~".*kaf
 | Transacciones por ventana de 30 s | PostgreSQL | `SUM(num_transactions)` por ventana |
 | Resumen por producto / por usuario | PostgreSQL | agregados en el rango del dashboard |
 | Logs del generador | Loki | `{job="python_generator"}` |
+| Reinicios del job Flink | Prometheus | `max(flink_jobmanager_job_numRestarts)` |
+| Retraso de la marca de agua | Prometheus | `max(flink_taskmanager_job_task_operator_watermarkLag)` |
+| Contrapresión | Prometheus | `max by (task_name) (flink_taskmanager_job_task_backPressuredTimeMsPerSecond)` |
 
 ---
 
