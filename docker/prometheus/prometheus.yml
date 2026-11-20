@@ -22,8 +22,3 @@ scrape_configs:
   - job_name: generator
     static_configs:
       - targets: ['host.docker.internal:8000']
-
-  # Solo con el plan B (scripts/python_consumer.py); si no se usa, aparece "down"
-  - job_name: python_consumer
-    static_configs:
-      - targets: ['host.docker.internal:8002']

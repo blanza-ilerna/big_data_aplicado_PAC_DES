@@ -76,7 +76,8 @@ Sistema de monitorización que recoge métricas de todos los servicios mediante 
 - `redpanda:9644` — métricas del broker.
 - `flink-jobmanager:9249` y `flink-taskmanager:9249` — métricas de Flink (jobs en ejecución, registros procesados, reinicios...).
 - `host.docker.internal:8000` — métricas expuestas por `generator.py`.
-- `host.docker.internal:8002` — solo con el plan B (`python_consumer.py`); si no se usa, aparece `down`.
+
+Las métricas `job_*` de `python_consumer.py` (plan B) no se scrapean: con Flink no existen. Su equivalente es, por ejemplo, filas escritas en PostgreSQL en 5 min: `sum(increase(flink_taskmanager_job_task_operator_numRecordsOut{operator_name=~".*pg_por_.*"}[5m]))`. Si usas el plan B, añade temporalmente un job `python_consumer` con target `host.docker.internal:8002`.
 
 Los scripts Python (`generator.py`, `api.py`) corren en el devcontainer, que usa la red del host (`--network=host` en `devcontainer.json`). Por eso Prometheus los alcanza a través de `host.docker.internal` y los scripts alcanzan los servicios en `localhost`.
 

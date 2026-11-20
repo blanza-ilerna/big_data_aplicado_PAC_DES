@@ -28,7 +28,6 @@
   - `redpanda` — redpanda:9644
   - `flink` — flink-jobmanager:9249 y flink-taskmanager:9249
   - `generator` — host.docker.internal:8000
-  - `python_consumer` — host.docker.internal:8002 (solo con el plan B; si no, `down` es normal)
 
 - [ ] Métricas del generador disponibles
   ```bash
